@@ -199,10 +199,13 @@ async def upload_invoice(
         # Mask PII before sending to LLM
         raw_ocr_masked = mask_invoice_for_llm({"ocr_text": ocr_text})
 
+        # PDFs: text only (fast). Images: text + image (accurate).
+        is_image = suffix in [".jpg", ".jpeg", ".png"]
         extracted_json = extract_invoice_json(
-            rgb_image=first_page_b,
             ocr_text=raw_ocr_masked.get("ocr_text", ocr_text),
+            rgb_image=first_page_b if is_image else None,
             filename=filename,
+            send_image=is_image,
         )
         extraction_ms = int((time.time() - extraction_start) * 1000)
 

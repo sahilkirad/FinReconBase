@@ -74,6 +74,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.processing.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.extracted.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.completed.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.dlq.events --partitions 3 --replication-factor 1 &&

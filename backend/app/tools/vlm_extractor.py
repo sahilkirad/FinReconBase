@@ -14,7 +14,6 @@ import logging
 
 import cv2
 import numpy as np
-import signal
 
 from app.core.config import get_settings
 
@@ -116,19 +115,19 @@ def _image_to_base64(image: np.ndarray) -> str:
     return base64.b64encode(buffer).decode("utf-8")
 
 
-class VLMTimeoutError(Exception):
-    pass
-
-def _vlm_timeout_handler(signum, frame):
-    raise VLMTimeoutError("VLM extraction timed out after 45 seconds")
-
-
 def extract_invoice_json(
-    rgb_image: np.ndarray,
     ocr_text: str,
+    rgb_image: np.ndarray | None = None,
     filename: str = "unknown",
+    send_image: bool = True,
 ) -> dict:
-    """Send Path B image + OCR text to Gemini VLM for semantic extraction.
+    """Send OCR text (and optionally image) to Gemini VLM for semantic extraction.
+
+    Args:
+        ocr_text: Extracted text from Tesseract OCR
+        rgb_image: Optional RGB image for visual context (used for images, skipped for PDFs)
+        filename: Source filename for logging
+        send_image: If True, send image to VLM. If False, send text only (faster for PDFs).
 
     Returns the raw JSON dict matching ExtractedInvoicePayload schema.
     Raises RuntimeError if Gemini API is unavailable or extraction fails.
@@ -142,22 +141,22 @@ def extract_invoice_json(
             "Production system requires a valid Gemini API key for VLM extraction."
         )
 
-    # Overall timeout: kill function after 45 seconds (Linux only)
-    import sys
-    if sys.platform != "win32":
-        signal.signal(signal.SIGALRM, _vlm_timeout_handler)
-        signal.alarm(45)
     try:
         import google.generativeai as genai
 
         genai.configure(api_key=settings.gemini_api_key)
         model = genai.GenerativeModel(settings.gemini_model)
 
-        image_b64 = _image_to_base64(rgb_image)
-        image_part = {"mime_type": "image/jpeg", "data": image_b64}
-
         prompt = EXTRACTION_PROMPT.format(ocr_text=ocr_text)
-        response = model.generate_content([prompt, image_part], request_options={"timeout": 30})
+
+        if send_image and rgb_image is not None:
+            # Send image + text (for image uploads where visual context matters)
+            image_b64 = _image_to_base64(rgb_image)
+            image_part = {"mime_type": "image/jpeg", "data": image_b64}
+            response = model.generate_content([prompt, image_part], request_options={"timeout": 60})
+        else:
+            # Text only (for PDFs where OCR is accurate)
+            response = model.generate_content(prompt, request_options={"timeout": 60})
 
         raw_text = response.text.strip()
         # Strip markdown code fences if present
@@ -174,12 +173,6 @@ def extract_invoice_json(
 
         return json.loads(raw_text)
 
-    except VLMTimeoutError:
-        if sys.platform != "win32":
-            signal.alarm(0)
-        raise RuntimeError("VLM extraction timed out after 45 seconds") from None
     except Exception as e:
-        if sys.platform != "win32":
-            signal.alarm(0)
         logger.error("Gemini VLM extraction failed", extra={"error": str(e)})
         raise RuntimeError(f"Gemini VLM extraction failed: {e}") from e

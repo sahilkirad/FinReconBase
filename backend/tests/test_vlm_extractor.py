@@ -25,7 +25,7 @@ class TestVLMExtraction:
             mock_settings.return_value.gemini_api_key = "replace-with-gemini-api-key"
 
             with pytest.raises(RuntimeError) as exc_info:
-                extract_invoice_json(img, "test OCR text", "test.pdf")
+                extract_invoice_json(ocr_text="test OCR text", filename="test.pdf")
 
             assert "Gemini API key not configured" in str(exc_info.value)
 
@@ -58,7 +58,7 @@ class TestVLMExtraction:
                 mock_model.generate_content.return_value = mock_response
                 mock_model_class.return_value = mock_model
 
-                result = extract_invoice_json(img, "OCR text", "test.pdf")
+                result = extract_invoice_json(ocr_text="OCR text", filename="test.pdf", send_image=False)
 
                 assert result["reference_data"]["invoice_number"] == "INV-001"
                 assert result["financial_summary"]["grand_total_paise"] == 118000
