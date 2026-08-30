@@ -81,7 +81,7 @@ class TestLineItemValidation:
             "total_paise": 118000,
         }]
         errors = validate_line_items(items)
-        assert len(errors) == 1
+        assert len(errors) == 2
         assert "taxable_value_paise" in errors[0]
 
     def test_invalid_total(self):

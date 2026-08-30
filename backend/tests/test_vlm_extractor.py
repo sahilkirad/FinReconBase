@@ -47,15 +47,7 @@ class TestVLMExtraction:
         img = np.zeros((100, 100, 3), dtype=np.uint8)
 
         mock_response = MagicMock()
-        mock_response.text = '''{
-            "metadata": {"source_file": "test.pdf", "page_count": 1, "processing_time_ms": 0},
-            "supplier_details": {"legal_name": "Test Corp", "gstin": None, "pan": None, "address": None, "state_code": None, "state_name": None, "phone": None, "email": None},
-            "buyer_details": {"legal_name": "Test Buyer", "gstin": None, "pan": None, "address": None, "state_code": None, "state_name": None, "phone": None, "email": None},
-            "reference_data": {"invoice_number": "INV-001", "document_type_code": "INV", "po_number": None, "grn_number": None, "document_date": "2026-08-29", "due_date": None, "irn": None},
-            "banking_details": {"bank_name": None, "account_number": None, "ifsc": None, "upi_id": None, "account_number_masked": None},
-            "line_items": [{"line_number": 1, "description": "Test item", "hsn_sac_code": None, "quantity": "1.0", "unit": "NOS", "unit_price_paise": 100000, "taxable_value_paise": 100000, "gst_rate": "18.0", "igst_paise": 18000, "cgst_paise": 0, "sgst_paise": 0, "total_paise": 118000}],
-            "financial_summary": {"subtotal_paise": 100000, "total_tax_paise": 18000, "total_igst_paise": 18000, "total_cgst_paise": 0, "total_sgst_paise": 0, "tds_deduction_paise": 0, "other_charges_paise": 0, "discount_paise": 0, "rounding_adjustment_paise": 0, "grand_total_paise": 118000}
-        }'''
+        mock_response.text = '{\n            "metadata": {"source_file": "test.pdf", "page_count": 1, "processing_time_ms": 0},\n            "supplier_details": {"legal_name": "Test Corp", "gstin": null, "pan": null, "address": null, "state_code": null, "state_name": null, "phone": null, "email": null},\n            "buyer_details": {"legal_name": "Test Buyer", "gstin": null, "pan": null, "address": null, "state_code": null, "state_name": null, "phone": null, "email": null},\n            "reference_data": {"invoice_number": "INV-001", "document_type_code": "INV", "po_number": null, "grn_number": null, "document_date": "2026-08-29", "due_date": null, "irn": null},\n            "banking_details": {"bank_name": null, "account_number": null, "ifsc": null, "upi_id": null, "account_number_masked": null},\n            "line_items": [{"line_number": 1, "description": "Test item", "hsn_sac_code": null, "quantity": "1.0", "unit": "NOS", "unit_price_paise": 100000, "taxable_value_paise": 100000, "gst_rate": "18.0", "igst_paise": 18000, "cgst_paise": 0, "sgst_paise": 0, "total_paise": 118000}],\n            "financial_summary": {"subtotal_paise": 100000, "total_tax_paise": 18000, "total_igst_paise": 18000, "total_cgst_paise": 0, "total_sgst_paise": 0, "tds_deduction_paise": 0, "other_charges_paise": 0, "discount_paise": 0, "rounding_adjustment_paise": 0, "grand_total_paise": 118000}\n        }'
 
         with patch('app.tools.vlm_extractor.get_settings') as mock_settings:
             mock_settings.return_value.gemini_api_key = "real-api-key"

@@ -142,9 +142,11 @@ def extract_invoice_json(
             "Production system requires a valid Gemini API key for VLM extraction."
         )
 
-    # Overall timeout: kill function after 45 seconds
-    signal.signal(signal.SIGALRM, _vlm_timeout_handler)
-    signal.alarm(45)
+    # Overall timeout: kill function after 45 seconds (Linux only)
+    import sys
+    if sys.platform != "win32":
+        signal.signal(signal.SIGALRM, _vlm_timeout_handler)
+        signal.alarm(45)
     try:
         import google.generativeai as genai
 
@@ -173,9 +175,11 @@ def extract_invoice_json(
         return json.loads(raw_text)
 
     except VLMTimeoutError:
-        signal.alarm(0)
+        if sys.platform != "win32":
+            signal.alarm(0)
         raise RuntimeError("VLM extraction timed out after 45 seconds") from None
     except Exception as e:
-        signal.alarm(0)
+        if sys.platform != "win32":
+            signal.alarm(0)
         logger.error("Gemini VLM extraction failed", extra={"error": str(e)})
         raise RuntimeError(f"Gemini VLM extraction failed: {e}") from e

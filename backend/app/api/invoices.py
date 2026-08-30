@@ -91,7 +91,37 @@ async def upload_invoice(
 ):
     """Upload an invoice document for Layer 1 ingestion and extraction."""
     start_time = time.time()
-    # --- Step 0: Validate vendor exists in vendor_users table ---
+    document_id = uuid.uuid4()
+    filename = file.filename or "unknown"
+
+    # --- Step 0: Read file content early for size/type checks ---
+    content = await file.read()
+    file_size = len(content)
+    content_type = file.content_type or "application/octet-stream"
+    suffix = Path(filename).suffix.lower() or ".pdf"
+
+    # --- Step 0a: Pre-flight size check (before DB query) ---
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if file_size > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "error_code": "FILE_TOO_LARGE",
+                "message": f"File size {file_size} exceeds max {settings.max_upload_size_mb}MB",
+            },
+        )
+
+    # --- Step 0b: Pre-flight extension check (before DB query) ---
+    if suffix.lstrip('.') not in [ext.lstrip('.') for ext in settings.allowed_upload_extensions]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error_code": "UNSUPPORTED_FILE_TYPE",
+                "message": f"File type '{suffix}' not allowed. Use: {settings.allowed_upload_extensions}",
+            },
+        )
+
+    # --- Step 0c: Validate vendor exists in vendor_users table ---
     vendor_check = db.execute(
         text("SELECT 1 FROM vendor_users WHERE vendor_code = :vc"),
         {"vc": vendor_code},
@@ -101,16 +131,6 @@ async def upload_invoice(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Vendor '{vendor_code}' is not onboarded. Contact admin.",
         )
-    document_id = uuid.uuid4()
-    filename = file.filename or "unknown"
-
-    # --- Step 0: Read file content ---
-    content = await file.read()
-    file_size = len(content)
-    content_type = file.content_type or "application/octet-stream"
-
-    # Write to temp file for guardrail and processing
-    suffix = Path(filename).suffix.lower() or ".pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(content)
         tmp_path = Path(tmp.name)
