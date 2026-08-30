@@ -1,0 +1,6 @@
+# This directory stores the DocRex ONNX model files.
+# Download from: https://huggingface.co/vivekkaushal/DocRex
+# Required files:
+#   - invoice_classifier_fp32.onnx
+#   - labels.json
+#   - preprocess.json

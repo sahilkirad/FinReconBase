@@ -1,0 +1,103 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: finrecon-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: finrecon
+    ports:
+      - "5457:5432"
+    volumes:
+      - finrecon_postgres_data:/var/lib/postgresql/data
+      - ./infra/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d finrecon"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: confluentinc/cp-kafka:7.9.0
+    container_name: finrecon-kafka
+    hostname: kafka
+    ports:
+      - "9094:9094"
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_LISTENERS: CONTROLLER://kafka:9092,SSL://kafka:9093,SSL_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: SSL://kafka:9093,SSL_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SSL:SSL,SSL_HOST:SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: SSL
+
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka.server.keystore.jks
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: kafka_keystore_creds
+      KAFKA_SSL_KEY_CREDENTIALS: kafka_sslkey_creds
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka.server.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: kafka_truststore_creds
+      KAFKA_SSL_CLIENT_AUTH: required
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - finrecon_kafka_data:/var/lib/kafka/data
+      - ./infra/certs:/etc/kafka/secrets:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-broker-api-versions --bootstrap-server kafka:9093 --command-config /etc/kafka/secrets/client.properties >/dev/null 2>&1"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.9.0
+    container_name: finrecon-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./infra/certs:/etc/kafka/secrets:ro
+      - ./infra/kafka/client.properties:/etc/kafka/client.properties:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.extracted.events --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.completed.events --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.dlq.events --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --list
+      "
+
+  backend-api:
+    build:
+      context: ./backend
+    container_name: finrecon-backend-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./infra/certs:/app/certs:ro
+      - ./backend/models:/app/models:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    
+
+volumes:
+  finrecon_postgres_data:
+  finrecon_kafka_data:
