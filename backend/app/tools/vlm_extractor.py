@@ -120,14 +120,24 @@ def extract_invoice_json(
     rgb_image: np.ndarray | None = None,
     filename: str = "unknown",
     send_image: bool = True,
+    model_override: str | None = None,
 ) -> dict:
     """Send OCR text (and optionally image) to Gemini VLM for semantic extraction.
+
+    IMPORTANT: Gemini is ONLY used for semantic field extraction.
+    Mathematical validation (line items, tax, grand total) is ALWAYS
+    performed by our local deterministic Python checksum layer.
+
+    Model Selection (enforced by invoice_worker):
+        - gemini-3.5-flash-lite: Standard digital PDFs and clear scans
+        - gemini-3.7-flash: Heavily degraded invoice photos
 
     Args:
         ocr_text: Extracted text from Tesseract OCR
         rgb_image: Optional RGB image for visual context (used for images, skipped for PDFs)
         filename: Source filename for logging
         send_image: If True, send image to VLM. If False, send text only (faster for PDFs).
+        model_override: Override the default model selection (e.g., 'gemini-3.5-flash-lite')
 
     Returns the raw JSON dict matching ExtractedInvoicePayload schema.
     Raises RuntimeError if Gemini API is unavailable or extraction fails.
@@ -141,11 +151,14 @@ def extract_invoice_json(
             "Production system requires a valid Gemini API key for VLM extraction."
         )
 
+    # Determine model to use
+    model_name = model_override or settings.gemini_model_fast
+
     try:
         import google.generativeai as genai
 
         genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.gemini_model)
+        model = genai.GenerativeModel(model_name)
 
         prompt = EXTRACTION_PROMPT.format(ocr_text=ocr_text)
 
@@ -168,7 +181,7 @@ def extract_invoice_json(
 
         logger.info(
             "Gemini VLM extraction complete",
-            extra={"filename": filename, "response_length": len(raw_text)},
+            extra={"source_file": filename, "model": model_name, "response_length": len(raw_text)},
         )
 
         return json.loads(raw_text)

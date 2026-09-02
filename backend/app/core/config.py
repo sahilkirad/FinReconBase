@@ -29,15 +29,20 @@ class Settings(BaseSettings):
 
     # Layer 1: Ingestion & Extraction
     gemini_api_key: str = Field(default='replace-with-gemini-api-key')
-    gemini_model: str = Field(default='gemini-3.6-flash')
+    gemini_model_fast: str = Field(default='gemini-3.5-flash-lite')  # Standard quality
+    gemini_model_fallback: str = Field(default='gemini-3.7-flash')  # Degraded images
 
     # OCR engine: 'tesseract' or 'textract' (mock for local)
     ocr_engine: str = Field(default='tesseract')
 
+    # OCR confidence threshold for model routing
+    ocr_confidence_threshold: float = Field(default=70.0)
 
     max_upload_size_mb: int = Field(default=10)
+    max_batch_size_mb: int = Field(default=100)
     allowed_upload_extensions: list[str] = Field(default=['.pdf', '.jpg', '.jpeg', '.png'])
     allowed_upload_mime_types: list[str] = Field(default=['application/pdf', 'image/jpeg', 'image/png'])
+    allowed_batch_extensions: list[str] = Field(default=['.pdf', '.csv'])
 
     # Blur detection threshold (Laplacian variance)
     blur_threshold: float = Field(default=100.0)
@@ -47,7 +52,19 @@ class Settings(BaseSettings):
     # Document classification threshold
     classification_threshold: float = Field(default=0.80)
 
+    # Batch storage path (shared Docker volume)
+    batch_storage_path: str = Field(default='/app/data/batch_files')
+
+    # Redis for distributed rate limiting
+    redis_url: str = Field(default='redis://redis:6379/0')
+    gemini_rpm_limit: int = Field(default=15)
+
+    # Worker configuration
+    layer1_consumer_group: str = Field(default='layer1_extractor_group')
+    layer1_max_concurrent: int = Field(default=3)
+
     # Kafka topics
+    raw_ingestion_topic: str = Field(default='invoice.processing.events')
     invoice_extracted_topic: str = Field(default='invoice.extracted.events')
     reconciliation_completed_topic: str = Field(default='reconciliation.completed.events')
     reconciliation_dlq_topic: str = Field(default='reconciliation.dlq.events')

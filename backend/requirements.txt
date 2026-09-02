@@ -21,3 +21,4 @@ onnxruntime>=1.20.0
 pytesseract==0.3.13
 python-multipart
 kafka-python>=2.0.2
+redis[hiredis]>=5.0.0

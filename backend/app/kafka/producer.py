@@ -105,57 +105,120 @@ def publish_batch_event(
     vendor_code: str,
     total_invoices: int,
     source_type: str,
-) -> str:
+    pages: list[dict] | None = None,
+) -> list[str]:
     """
-    Publish a batch processing started event.
-    
+    Publish batch processing events to Kafka (Fan-Out pattern).
+
+    For PDF batches: publishes one event per page with file path (Claim Check).
+    For CSV batches: publishes one event with the CSV file path.
+
     Args:
         batch_id: UUID of the batch job
         vendor_code: Vendor code
-        total_invoices: Total number of invoices in batch
+        total_invoices: Total number of invoices/pages in batch
         source_type: 'pdf' or 'csv'
-    
+        pages: List of page dicts with file_path, file_size, page_index
+
     Returns:
-        Event ID
+        List of event IDs published
     """
     config = KafkaConfig.from_settings()
-    event_id = f"evt_batch_{uuid.uuid4()}"
-    
-    event_payload = {
-        "specversion": "1.0",
-        "type": "batch.processing.started",
-        "source": "/layer1/batch",
-        "id": event_id,
-        "time": datetime.now(timezone.utc).isoformat(),
-        "data": {
-            "batch_id": batch_id,
-            "vendor_code": vendor_code,
-            "total_invoices": total_invoices,
-            "source_type": source_type,
-        },
-    }
-    
-    try:
-        producer = get_producer()
-        future = producer.send(
-            topic=config.invoice_processing_topic,
-            key=vendor_code.encode("utf-8"),
-            value=json.dumps(event_payload).encode("utf-8"),
-        )
-        future.get(timeout=10)
-        
+    event_ids = []
+
+    if pages:
+        # Fan-Out: One event per page (Claim Check pattern)
+        for page in pages:
+            event_id = f"evt_batch_{uuid.uuid4()}"
+
+            event_payload = {
+                "specversion": "1.0",
+                "type": "batch.page.ingestion",
+                "source": "/layer1/batch",
+                "id": event_id,
+                "time": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "batch_id": batch_id,
+                    "vendor_code": vendor_code,
+                    "source_type": source_type,
+                    "page_index": page["page_index"],
+                    "file_path": page["file_path"],  # Claim Check!
+                    "file_size": page["file_size"],
+                },
+            }
+
+            try:
+                producer = get_producer()
+                future = producer.send(
+                    topic=config.invoice_processing_topic,
+                    key=vendor_code.encode("utf-8"),
+                    value=json.dumps(event_payload).encode("utf-8"),
+                )
+                future.get(timeout=10)
+                event_ids.append(event_id)
+
+                logger.debug(
+                    "Page event published",
+                    extra={
+                        "event_id": event_id,
+                        "batch_id": batch_id,
+                        "page_index": page["page_index"],
+                    },
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to publish page event",
+                    extra={"event_id": event_id, "error": str(e)},
+                )
+                raise
+
         logger.info(
-            "Batch event published",
-            extra={"event_id": event_id, "batch_id": batch_id},
+            "Batch events published (Fan-Out)",
+            extra={
+                "batch_id": batch_id,
+                "events_published": len(event_ids),
+            },
         )
-        return event_id
-        
-    except Exception as e:
-        logger.error(
-            "Failed to publish batch event",
-            extra={"event_id": event_id, "error": str(e)},
-        )
-        raise
+    else:
+        # Fallback: single batch event (no pages provided)
+        event_id = f"evt_batch_{uuid.uuid4()}"
+
+        event_payload = {
+            "specversion": "1.0",
+            "type": "batch.processing.started",
+            "source": "/layer1/batch",
+            "id": event_id,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "data": {
+                "batch_id": batch_id,
+                "vendor_code": vendor_code,
+                "total_invoices": total_invoices,
+                "source_type": source_type,
+            },
+        }
+
+        try:
+            producer = get_producer()
+            future = producer.send(
+                topic=config.invoice_processing_topic,
+                key=vendor_code.encode("utf-8"),
+                value=json.dumps(event_payload).encode("utf-8"),
+            )
+            future.get(timeout=10)
+            event_ids.append(event_id)
+
+            logger.info(
+                "Batch event published",
+                extra={"event_id": event_id, "batch_id": batch_id},
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to publish batch event",
+                extra={"event_id": event_id, "error": str(e)},
+            )
+            raise
+
+    return event_ids
 
 
 def close_producer():

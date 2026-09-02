@@ -70,16 +70,29 @@ services:
         condition: service_healthy
     volumes:
       - ./infra/certs:/etc/kafka/secrets:ro
-      - ./infra/kafka/client.properties:/etc/kafka/client.properties:ro
+      - ./infra/certs/client.properties:/etc/kafka/client.properties:ro
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "
-      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.processing.events --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.processing.events --partitions 5 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.extracted.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.completed.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.dlq.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --list
       "
+
+  redis:
+    image: redis:7-alpine
+    container_name: finrecon-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - finrecon_redis_data:/data
 
   backend-api:
     build:
@@ -92,13 +105,35 @@ services:
     volumes:
       - ./infra/certs:/app/certs:ro
       - ./backend/models:/app/models:ro
+      - batch_image_data:/app/data/batch_files
     depends_on:
       postgres:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-    
+      redis:
+        condition: service_healthy
+
+  invoice_worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.invoice_worker"]
+    env_file:
+      - .env
+    volumes:
+      - ./infra/certs:/app/certs:ro
+      - ./backend/models:/app/models:ro
+      - batch_image_data:/app/data/batch_files
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 3
 
 volumes:
   finrecon_postgres_data:
   finrecon_kafka_data:
+  finrecon_redis_data:
+  batch_image_data:

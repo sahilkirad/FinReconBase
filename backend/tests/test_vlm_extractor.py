@@ -51,7 +51,7 @@ class TestVLMExtraction:
 
         with patch('app.tools.vlm_extractor.get_settings') as mock_settings:
             mock_settings.return_value.gemini_api_key = "real-api-key"
-            mock_settings.return_value.gemini_model = "gemini-1.5-flash"
+            mock_settings.return_value.gemini_model_fast = "gemini-3.5-flash-lite"
 
             with patch('google.generativeai.GenerativeModel') as mock_model_class:
                 mock_model = MagicMock()

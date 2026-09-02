@@ -1,15 +1,23 @@
 """
-Batch Invoice Upload API
+Batch Invoice Upload API — Kafka Fan-Out + Claim Check Pattern
 
-Endpoints for bulk invoice processing:
+Endpoints:
 - POST /invoices/batch: Upload PDF or CSV for batch processing
 - GET /invoices/batch/{batch_id}: Get batch status
 - GET /invoices/batch/{batch_id}/invoices: List invoices in batch
+
+Architecture:
+1. API saves individual pages to shared Docker volume (/app/data/batch_files/)
+2. API publishes one Kafka event per page (file path only, NOT bytes)
+3. API returns 202 ACCEPTED immediately (non-blocking)
+4. Workers consume events, run boundary detection + full pipeline
+
+RULE: No OCR in API thread — it's a blocking anti-pattern.
+All heavy processing is offloaded to Kafka workers.
 """
 
 import json
 import logging
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -17,7 +25,7 @@ from pathlib import Path
 import cv2
 import fitz  # PyMuPDF
 import numpy as np
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -38,265 +46,111 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/invoices/batch", tags=["batch"])
 
 
-def _pdf_to_images(pdf_bytes: bytes) -> list[np.ndarray]:
-    """Convert PDF pages to numpy arrays."""
+# =============================================================================
+# Page Splitting (Fan-Out) — No OCR, No Heavy Processing
+# =============================================================================
+
+
+def _split_pdf_to_pages(
+    pdf_bytes: bytes,
+    document_id: str,
+    storage_path: str,
+) -> list[dict]:
+    """Split PDF into individual page JPEG files.
+
+    This is the ONLY work the API does for PDF batches.
+    No OCR, no boundary detection — just render and save.
+
+    Args:
+        pdf_bytes: Raw PDF file bytes
+        document_id: UUID for this batch (used as directory name)
+        storage_path: Base storage directory (shared Docker volume)
+
+    Returns:
+        List of dicts: [{"page_index": 0, "file_path": "...", "file_size": 12345}, ...]
+    """
+    batch_dir = Path(storage_path) / document_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images = []
-    for page in doc:
+    pages = []
+
+    for page_idx, page in enumerate(doc):
+        # Render at 200 DPI (worker will rescale to 300 if needed)
         mat = fitz.Matrix(200 / 72, 200 / 72)
         pix = page.get_pixmap(matrix=mat)
-        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.h, pix.w, pix.n
+        )
+
+        # Convert to BGR for OpenCV
         if pix.n == 4:
             img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
         elif pix.n == 3:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        images.append(img)
+
+        # Save as JPEG (smaller than PNG, ~33% smaller than base64)
+        file_path = batch_dir / f"page_{page_idx}.jpg"
+        cv2.imwrite(str(file_path), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+        file_size = file_path.stat().st_size
+        pages.append({
+            "page_index": page_idx,
+            "file_path": str(file_path),
+            "file_size": file_size,
+        })
+
     doc.close()
-    return images
+
+    logger.info(
+        "PDF split into pages",
+        document_id=document_id,
+        page_count=len(pages),
+        storage_path=str(batch_dir),
+    )
+
+    return pages
 
 
-def _process_batch_in_background(
-    batch_id: str,
-    vendor_code: str,
-    source_type: str,
-    file_content: bytes,
+def _save_single_image(
+    image_bytes: bytes,
+    document_id: str,
     filename: str,
-):
+    storage_path: str,
+) -> list[dict]:
+    """Save single image (JPEG/PNG) to shared volume.
+
+    Args:
+        image_bytes: Raw image file bytes
+        document_id: UUID for this batch
+        filename: Original filename (for error messages)
+        storage_path: Base storage directory
+
+    Returns:
+        List with single dict: page_index=0, file_path, file_size
     """
-    Background task to process a batch of invoices.
-    
-    This runs after the API returns the batch_id.
-    Processes each invoice and updates batch status.
-    """
-    from app.tools.boundary_detector import detect_boundaries
-    from app.tools.checksum import run_checksum
-    from app.tools.csv_parser import parse_csv, to_extracted_payload, validate_row
-    from app.tools.vlm_extractor import extract_invoice_json
-    from app.tools.ocr_engine import extract_text
-    from app.tools.preprocessing import preprocess_path_a_ocr, preprocess_path_b_vlm
-    from app.tools.blur_check import check_blur
-    from app.tools.pii_masker import mask_invoice_for_llm
-    from app.schemas.invoice import ExtractedInvoicePayload
-    from app.tools.vlm_optimizer import get_vlm_rate_limiter, retry_with_backoff, select_model
-    
-    # Get DB session
-    from app.db.session import SessionLocal
-    db = SessionLocal()
-    
-    try:
-        # Update batch status to PROCESSING
-        db.execute(
-            text("UPDATE batch_jobs SET status = 'PROCESSING', updated_at = now() WHERE batch_id = :bid"),
-            {"bid": batch_id},
-        )
-        db.commit()
-        
-        rate_limiter = get_vlm_rate_limiter()
-        
-        if source_type == "pdf":
-            # Process PDF with boundary detection
-            page_images = _pdf_to_images(file_content)
-            invoice_groups = detect_boundaries(page_images)
-            
-            for inv_group in invoice_groups:
-                # Rate limit
-                rate_limiter.acquire()
-                
-                start_time = time.time()
-                
-                try:
-                    # Get first page image for processing
-                    first_page_idx = inv_group.page_indices[0]
-                    page_img = page_images[first_page_idx]
-                    
-                    # Blur check
-                    blur_score, blur_passed, processed_img = check_blur(page_img)
-                    if not blur_passed:
-                        _update_item_status(db, batch_id, inv_group.invoice_number, "FAILED", "Blur check failed")
-                        continue
-                    
-                    # Preprocessing
-                    path_a = preprocess_path_a_ocr(processed_img)
-                    path_b = preprocess_path_b_vlm(processed_img)
-                    
-                    # OCR
-                    ocr_text, ocr_confidence = extract_text(path_a)
-                    
-                    # VLM extraction (with retry)
-                    raw_ocr_masked = mask_invoice_for_llm({"ocr_text": ocr_text})
-                    
-                    model = select_model(is_batch=True)
-                    extracted_json = retry_with_backoff(
-                        lambda: extract_invoice_json(
-                            ocr_text=raw_ocr_masked.get("ocr_text", ocr_text),
-                            send_image=False,  # PDFs: text only
-                        )
-                    )
-                    
-                    # Checksum
-                    checksum_errors = run_checksum(extracted_json)
-                    
-                    # Schema validation
-                    try:
-                        invoice_payload = ExtractedInvoicePayload(**extracted_json)
-                        processing_status = "VALIDATED" if not checksum_errors else "EXCEPTION_FLAGGED"
-                    except Exception as e:
-                        _update_item_status(db, batch_id, inv_group.invoice_number, "FAILED", str(e))
-                        continue
-                    
-                    # Insert to DB
-                    _insert_invoice(db, batch_id, vendor_code, invoice_payload, processing_status, checksum_errors, first_page_idx)
-                    
-                    # Update batch progress
-                    db.execute(
-                        text("UPDATE batch_jobs SET processed_count = processed_count + 1, updated_at = now() WHERE batch_id = :bid"),
-                        {"bid": batch_id},
-                    )
-                    db.commit()
-                    
-                except Exception as e:
-                    logger.error(f"Invoice processing failed: {e}")
-                    _update_item_status(db, batch_id, inv_group.invoice_number, "FAILED", str(e))
-                    db.execute(
-                        text("UPDATE batch_jobs SET failed_count = failed_count + 1, updated_at = now() WHERE batch_id = :bid"),
-                        {"bid": batch_id},
-                    )
-                    db.commit()
-        
-        elif source_type == "csv":
-            # Process CSV
-            valid_rows, errors, duplicates = validate_csv(file_content.decode("utf-8-sig"))
-            
-            for row in valid_rows:
-                # Rate limit
-                rate_limiter.acquire()
-                
-                try:
-                    invoice_number = row.get("invoice_number")
-                    
-                    # Convert to payload
-                    invoice_payload = to_extracted_payload(row)
-                    
-                    # Checksum
-                    checksum_errors = run_checksum(invoice_payload.model_dump())
-                    processing_status = "VALIDATED" if not checksum_errors else "EXCEPTION_FLAGGED"
-                    
-                    # Insert to DB
-                    _insert_invoice(db, batch_id, vendor_code, invoice_payload, processing_status, checksum_errors, row.get("_row_number"))
-                    
-                    # Update batch progress
-                    db.execute(
-                        text("UPDATE batch_jobs SET processed_count = processed_count + 1, updated_at = now() WHERE batch_id = :bid"),
-                        {"bid": batch_id},
-                    )
-                    db.commit()
-                    
-                except Exception as e:
-                    logger.error(f"CSV row processing failed: {e}")
-                    _update_item_status(db, batch_id, row.get("invoice_number"), "FAILED", str(e))
-                    db.execute(
-                        text("UPDATE batch_jobs SET failed_count = failed_count + 1, updated_at = now() WHERE batch_id = :bid"),
-                        {"bid": batch_id},
-                    )
-                    db.commit()
-        
-        # Mark batch as completed
-        db.execute(
-            text("UPDATE batch_jobs SET status = 'COMPLETED', completed_at = now(), updated_at = now() WHERE batch_id = :bid"),
-            {"bid": batch_id},
-        )
-        db.commit()
-        
-        logger.info(f"Batch {batch_id} processing completed")
-        
-    except Exception as e:
-        logger.error(f"Batch processing failed: {e}")
-        db.execute(
-            text("UPDATE batch_jobs SET status = 'FAILED', updated_at = now() WHERE batch_id = :bid"),
-            {"bid": batch_id},
-        )
-        db.commit()
-    finally:
-        db.close()
+    batch_dir = Path(storage_path) / document_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"Cannot decode image: {filename}")
+
+    file_path = batch_dir / f"page_0.jpg"
+    cv2.imwrite(str(file_path), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+    file_size = file_path.stat().st_size
+    return [{
+        "page_index": 0,
+        "file_path": str(file_path),
+        "file_size": file_size,
+    }]
 
 
-def _update_item_status(db, batch_id: str, invoice_number: str, status: str, error: str):
-    """Update a batch item's status."""
-    db.execute(
-        text("""
-            UPDATE batch_invoice_items 
-            SET status = :status, error_message = :error, updated_at = now()
-            WHERE batch_id = :bid AND invoice_number = :inv
-        """),
-        {"bid": batch_id, "inv": invoice_number, "status": status, "error": error},
-    )
-    db.commit()
-
-
-def _insert_invoice(db, batch_id: str, vendor_code: str, payload, status: str, errors: list, row_num: int):
-    """Insert extracted invoice and batch item records."""
-    document_id = str(uuid.uuid4())
-    event_id = f"evt_{uuid.uuid4()}"
-    
-    # Insert to extracted_invoices
-    db.execute(
-        text("""
-            INSERT INTO extracted_invoices (
-                document_id, vendor_code, invoice_number, document_type_code,
-                po_number, document_date, due_date,
-                supplier_legal_name, supplier_gstin, supplier_pan,
-                buyer_legal_name, buyer_gstin,
-                currency_code, grand_total_paise, tds_deduction_paise,
-                processing_status, parsed_payload, validation_errors
-            ) VALUES (
-                :document_id, :vendor_code, :invoice_number, :document_type_code,
-                :po_number, :document_date, :due_date,
-                :supplier_legal_name, :supplier_gstin, :supplier_pan,
-                :buyer_legal_name, :buyer_gstin,
-                'INR', :grand_total_paise, :tds_deduction_paise,
-                :processing_status, :parsed_payload, :validation_errors
-            )
-        """),
-        {
-            "document_id": document_id,
-            "vendor_code": vendor_code,
-            "invoice_number": payload.reference_data.invoice_number,
-            "document_type_code": payload.reference_data.document_type_code,
-            "po_number": payload.reference_data.po_number,
-            "document_date": payload.reference_data.document_date,
-            "due_date": payload.reference_data.due_date,
-            "supplier_legal_name": payload.supplier_details.legal_name,
-            "supplier_gstin": payload.supplier_details.gstin,
-            "supplier_pan": payload.supplier_details.pan,
-            "buyer_legal_name": payload.buyer_details.legal_name,
-            "buyer_gstin": payload.buyer_details.gstin,
-            "grand_total_paise": payload.financial_summary.grand_total_paise,
-            "tds_deduction_paise": payload.financial_summary.tds_deduction_paise,
-            "processing_status": status,
-            "parsed_payload": payload.model_dump_json(),
-            "validation_errors": json.dumps(errors),
-        },
-    )
-    
-    # Insert batch item
-    db.execute(
-        text("""
-            INSERT INTO batch_invoice_items (
-                batch_id, document_id, row_number, invoice_number, status, processing_time_ms
-            ) VALUES (
-                :batch_id, :document_id, :row_number, :invoice_number, :status, 0
-            )
-        """),
-        {
-            "batch_id": batch_id,
-            "document_id": document_id,
-            "row_number": row_num,
-            "invoice_number": payload.reference_data.invoice_number,
-            "status": status,
-        },
-    )
-    
-    db.commit()
+# =============================================================================
+# API Endpoints
+# =============================================================================
 
 
 @router.post(
@@ -314,16 +168,25 @@ async def upload_batch(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     user_context: dict = Depends(get_current_user_context),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
-    """Upload a batch of invoices (PDF or CSV) for async processing."""
-    
+    """Upload a batch of invoices for async Kafka processing.
+
+    This endpoint is FAST and NON-BLOCKING:
+    1. Validates file type and size
+    2. Saves individual pages to shared Docker volume
+    3. Publishes Kafka events (file paths only)
+    4. Returns 202 ACCEPTED immediately
+
+    No OCR, no boundary detection, no VLM calls in the API thread.
+    """
+    start_time = time.time()
+
     # Read file content
     content = await file.read()
     file_size = len(content)
     filename = file.filename or "unknown"
     suffix = Path(filename).suffix.lower()
-    
+
     # Validate file type
     if suffix not in [".pdf", ".csv"]:
         raise HTTPException(
@@ -333,18 +196,18 @@ async def upload_batch(
                 "message": f"File type '{suffix}' not supported. Use PDF or CSV.",
             },
         )
-    
+
     # Validate file size (max 100MB for batch)
-    max_batch_size = 100 * 1024 * 1024
-    if file_size > max_batch_size:
+    max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
+    if file_size > max_batch_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail={
                 "error_code": "FILE_TOO_LARGE",
-                "message": f"Batch file size {file_size} exceeds max 100MB",
+                "message": f"Batch file size {file_size} exceeds max {settings.max_batch_size_mb}MB",
             },
         )
-    
+
     # Validate vendor exists
     vendor_check = db.execute(
         text("SELECT 1 FROM vendor_users WHERE vendor_code = :vc"),
@@ -355,27 +218,43 @@ async def upload_batch(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Vendor '{vendor_code}' is not onboarded.",
         )
-    
-    # Create batch job record
+
+    # Create batch ID and determine source type
     batch_id = str(uuid.uuid4())
     source_type = "pdf" if suffix == ".pdf" else "csv"
-    
-    # Quick count for initial response
-    if source_type == "csv":
+
+    # --- Step 1: Split and save pages (Claim Check) ---
+    if source_type == "pdf":
         try:
-            rows = content.decode("utf-8-sig").strip().split("\n")
-            total_invoices = max(0, len(rows) - 1)  # Subtract header
-        except Exception:
-            total_invoices = 0
+            pages = _split_pdf_to_pages(
+                pdf_bytes=content,
+                document_id=batch_id,
+                storage_path=settings.batch_storage_path,
+            )
+        except Exception as e:
+            logger.error(f"PDF split failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error_code": "PDF_SPLIT_FAILED",
+                    "message": f"Failed to split PDF: {e}",
+                },
+            )
     else:
-        # For PDF, estimate page count
-        try:
-            doc = fitz.open(stream=content, filetype="pdf")
-            total_invoices = len(doc)
-            doc.close()
-        except Exception:
-            total_invoices = 0
-    
+        # CSV: no page splitting needed, save as-is
+        batch_dir = Path(settings.batch_storage_path) / batch_id
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = batch_dir / "data.csv"
+        csv_path.write_bytes(content)
+        pages = [{
+            "page_index": 0,
+            "file_path": str(csv_path),
+            "file_size": file_size,
+        }]
+
+    total_invoices = len(pages)
+
+    # --- Step 2: Insert batch job record (PENDING) ---
     db.execute(
         text("""
             INSERT INTO batch_jobs (batch_id, vendor_code, source_type, filename, total_invoices, status)
@@ -390,33 +269,42 @@ async def upload_batch(
         },
     )
     db.commit()
-    
-    # Start background processing
-    background_tasks.add_task(
-        _process_batch_in_background,
+
+    # --- Step 3: Publish Kafka events (Fan-Out) ---
+    # One event per page with file path (Claim Check pattern)
+    try:
+        event_ids = publish_batch_event(
+            batch_id=batch_id,
+            vendor_code=vendor_code,
+            total_invoices=total_invoices,
+            source_type=source_type,
+            pages=pages,  # File paths, NOT bytes
+        )
+    except Exception as e:
+        logger.error(f"Failed to publish batch events: {e}")
+        # Batch record exists but events failed — worker can retry
+        # Don't fail the upload, just log the error
+
+    processing_time_ms = int((time.time() - start_time) * 1000)
+
+    logger.info(
+        "Batch upload completed",
         batch_id=batch_id,
         vendor_code=vendor_code,
-        source_type=source_type,
-        file_content=content,
-        filename=filename,
+        total_invoices=total_invoices,
+        processing_time_ms=processing_time_ms,
     )
-    
-    # Publish Kafka event
-    try:
-        publish_batch_event(batch_id, vendor_code, total_invoices, source_type)
-    except Exception as e:
-        logger.warning(f"Failed to publish batch event: {e}")
-    
+
     return BatchUploadResponse(
         batch_id=batch_id,
         vendor_code=vendor_code,
         source_type=source_type,
         filename=filename,
         total_invoices=total_invoices,
-        valid_invoices=total_invoices,  # Will be updated during processing
+        valid_invoices=total_invoices,
         invalid_invoices=0,
         status="PENDING",
-        message=f"Batch of {total_invoices} invoices queued for processing",
+        message=f"Batch of {total_invoices} pages queued for parallel extraction. Processing time: {processing_time_ms}ms",
     )
 
 
@@ -427,7 +315,7 @@ async def get_batch_status(
     user_context: dict = Depends(get_current_user_context),
 ):
     """Get the status of a batch processing job."""
-    
+
     result = db.execute(
         text("""
             SELECT batch_id, vendor_code, source_type, filename,
@@ -438,17 +326,17 @@ async def get_batch_status(
         """),
         {"bid": batch_id},
     ).first()
-    
+
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Batch {batch_id} not found",
         )
-    
+
     total = result[4] or 0
     processed = result[5] or 0
     progress = (processed / total * 100) if total > 0 else 0
-    
+
     return BatchStatusResponse(
         batch_id=result[0],
         vendor_code=result[1],
@@ -472,23 +360,23 @@ async def get_batch_invoices(
     user_context: dict = Depends(get_current_user_context),
 ):
     """List all invoices in a batch with their processing status."""
-    
+
     # Verify batch exists
     batch = db.execute(
         text("SELECT 1 FROM batch_jobs WHERE batch_id = :bid"),
         {"bid": batch_id},
     ).first()
-    
+
     if batch is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Batch {batch_id} not found",
         )
-    
+
     # Get all items
     items = db.execute(
         text("""
-            SELECT id, document_id, row_number, invoice_number, 
+            SELECT id, document_id, row_number, invoice_number,
                    status, error_message, processing_time_ms
             FROM batch_invoice_items
             WHERE batch_id = :bid
@@ -496,7 +384,7 @@ async def get_batch_invoices(
         """),
         {"bid": batch_id},
     ).all()
-    
+
     return BatchInvoicesResponse(
         batch_id=batch_id,
         total_items=len(items),
