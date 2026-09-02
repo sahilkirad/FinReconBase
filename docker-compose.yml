@@ -114,6 +114,21 @@ services:
       redis:
         condition: service_healthy
 
+  outbox_poller:
+    build:
+      context: ./backend
+    container_name: finrecon-outbox-poller
+    command: ["python", "-m", "app.workers.outbox_poller"]
+    env_file:
+      - .env
+    volumes:
+      - ./infra/certs:/app/certs:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
   invoice_worker:
     build:
       context: ./backend
@@ -125,6 +140,8 @@ services:
       - ./backend/models:/app/models:ro
       - batch_image_data:/app/data/batch_files
     depends_on:
+      postgres:
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
       redis:

@@ -295,21 +295,46 @@ def _insert_extracted_invoice(
     return document_id
 
 
-def _update_batch_progress(db, batch_id: str, success: bool):
-    """Update batch job progress counters."""
+def _update_batch_progress(db, batch_id: str, success: bool) -> bool:
+    """Atomically update batch progress and check if batch is complete.
+
+    Uses UPDATE ... RETURNING to avoid race conditions across workers.
+    Returns True if this worker should call _complete_batch().
+    """
     from sqlalchemy import text
 
     if success:
-        db.execute(
-            text("UPDATE batch_jobs SET processed_count = processed_count + 1, updated_at = now() WHERE batch_id = :bid"),
+        result = db.execute(
+            text("""
+                UPDATE batch_jobs
+                SET processed_count = processed_count + 1,
+                    updated_at = now()
+                WHERE batch_id = :bid
+                RETURNING total_invoices, processed_count, failed_count
+            """),
             {"bid": batch_id},
-        )
+        ).first()
     else:
-        db.execute(
-            text("UPDATE batch_jobs SET failed_count = failed_count + 1, updated_at = now() WHERE batch_id = :bid"),
+        result = db.execute(
+            text("""
+                UPDATE batch_jobs
+                SET failed_count = failed_count + 1,
+                    updated_at = now()
+                WHERE batch_id = :bid
+                RETURNING total_invoices, processed_count, failed_count
+            """),
             {"bid": batch_id},
-        )
+        ).first()
+
     db.commit()
+
+    if result:
+        total, processed, failed = result
+        done = processed + failed
+        if done >= total:
+            return True  # This worker should complete the batch
+
+    return False
 
 
 def _complete_batch(db, batch_id: str):
@@ -402,9 +427,36 @@ class InvoiceConsumer:
         """Handle a single page ingestion event (Claim Check pattern)."""
         data = event_data.get("data", {})
         batch_id = data.get("batch_id")
-        vendor_code = data.get("vendor_code")
+        event_vendor_code = data.get("vendor_code")
         file_path = data.get("file_path")
         page_index = data.get("page_index", 0)
+
+        from sqlalchemy import text
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            database_vendor_code = db.execute(
+                text("""
+                    SELECT vendor_code
+                    FROM batch_jobs
+                    WHERE batch_id = :batch_id
+                """),
+                {"batch_id": batch_id},
+            ).scalar_one_or_none()
+        finally:
+            db.close()
+
+        if database_vendor_code is None:
+            raise ValueError(f"Batch not found: {batch_id}")
+
+        if event_vendor_code != database_vendor_code:
+            raise ValueError(
+                f"Tenant mismatch for batch {batch_id}: "
+                f"event={event_vendor_code}, database={database_vendor_code}"
+            )
+
+        vendor_code = database_vendor_code
 
         logger.info(
             "Processing page event",
@@ -437,13 +489,18 @@ class InvoiceConsumer:
         try:
             if result["status"] != "FAILED":
                 _insert_extracted_invoice(db, batch_id, vendor_code, result, page_index)
-                _update_batch_progress(db, batch_id, success=True)
+                is_complete = _update_batch_progress(db, batch_id, success=True)
             else:
-                _update_batch_progress(db, batch_id, success=False)
+                is_complete = _update_batch_progress(db, batch_id, success=False)
                 logger.warning(
                     "Page processing failed",
                     extra={"batch_id": batch_id, "page_index": page_index, "error": result.get("error")},
                 )
+
+            # If this worker completed the batch, mark it done
+            if is_complete:
+                _complete_batch(db, batch_id)
+                logger.info(f"Batch {batch_id} completed!")
         finally:
             db.close()
 

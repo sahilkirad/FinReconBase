@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.security import get_current_user_context
 from app.db.session import get_db
-from app.kafka.producer import publish_batch_event
 from app.schemas.batch import (
     BatchErrorResponse,
     BatchInvoiceItemResponse,
@@ -164,7 +163,6 @@ def _save_single_image(
 )
 async def upload_batch(
     file: UploadFile = File(..., description="PDF or CSV file with invoices"),
-    vendor_code: str = Form(..., description="Vendor code from JWT context"),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     user_context: dict = Depends(get_current_user_context),
@@ -180,6 +178,7 @@ async def upload_batch(
     No OCR, no boundary detection, no VLM calls in the API thread.
     """
     start_time = time.time()
+    vendor_code = str(user_context["vendor_code"])
 
     # Read file content
     content = await file.read()
@@ -254,36 +253,85 @@ async def upload_batch(
 
     total_invoices = len(pages)
 
-    # --- Step 2: Insert batch job record (PENDING) ---
-    db.execute(
-        text("""
-            INSERT INTO batch_jobs (batch_id, vendor_code, source_type, filename, total_invoices, status)
-            VALUES (:batch_id, :vendor_code, :source_type, :filename, :total_invoices, 'PENDING')
-        """),
-        {
-            "batch_id": batch_id,
-            "vendor_code": vendor_code,
-            "source_type": source_type,
-            "filename": filename,
-            "total_invoices": total_invoices,
-        },
-    )
-    db.commit()
-
-    # --- Step 3: Publish Kafka events (Fan-Out) ---
-    # One event per page with file path (Claim Check pattern)
+    # --- Step 2: Atomic Transaction — batch_jobs + outbox_events ---
+    # Outbox Pattern: Write to DB first, then publish to Kafka.
+    # This guarantees exactly-once delivery semantics.
+    # Note: get_db() yields a session with autocommit=False,
+    # so a transaction is already active. No db.begin() needed.
     try:
-        event_ids = publish_batch_event(
-            batch_id=batch_id,
-            vendor_code=vendor_code,
-            total_invoices=total_invoices,
-            source_type=source_type,
-            pages=pages,  # File paths, NOT bytes
+        # Insert batch_jobs record
+        db.execute(
+            text("""
+                INSERT INTO batch_jobs (batch_id, vendor_code, source_type, filename, total_invoices, status)
+                VALUES (:batch_id, :vendor_code, :source_type, :filename, :total_invoices, 'PENDING')
+            """),
+            {
+                "batch_id": batch_id,
+                "vendor_code": vendor_code,
+                "source_type": source_type,
+                "filename": filename,
+                "total_invoices": total_invoices,
+            },
         )
+
+        # Insert outbox_events — one per page (Claim Check pattern)
+        # A separate outbox poller will publish these to Kafka
+        for page in pages:
+            event_id = f"evt_outbox_{uuid.uuid4()}"
+            outbox_payload = {
+                "specversion": "1.0",
+                "type": "batch.page.ingestion",
+                "source": "/layer1/batch",
+                "id": event_id,
+                "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "data": {
+                    "batch_id": batch_id,
+                    "vendor_code": vendor_code,
+                    "source_type": source_type,
+                    "page_index": page["page_index"],
+                    "file_path": page["file_path"],  # Claim Check!
+                    "file_size": page["file_size"],
+                },
+            }
+
+            db.execute(
+                text("""
+                    INSERT INTO outbox_events (
+                        event_id, aggregate_type, aggregate_id,
+                        topic, partition_key, event_type,
+                        payload, status
+                    ) VALUES (
+                        :event_id, 'BatchJob', :aggregate_id,
+                        :topic, :partition_key, 'BatchPageIngestion',
+                        :payload, 'PENDING'
+                    )
+                """),
+                {
+                    "event_id": event_id,
+                    "aggregate_id": batch_id,
+                    "topic": settings.raw_ingestion_topic,
+                    "partition_key": vendor_code,
+                    "payload": json.dumps(outbox_payload),
+                },
+            )
+
+        # Commit atomic transaction
+        db.commit()
+
+        logger.info(
+            f"Batch + outbox committed atomically: {batch_id}, {len(pages)} events"
+        )
+
     except Exception as e:
-        logger.error(f"Failed to publish batch events: {e}")
-        # Batch record exists but events failed — worker can retry
-        # Don't fail the upload, just log the error
+        db.rollback()
+        logger.error(f"Failed to insert batch + outbox: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error_code": "OUTBOX_WRITE_FAILED",
+                "message": f"Failed to persist batch: {e}",
+            },
+        )
 
     processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -323,8 +371,12 @@ async def get_batch_status(
                    status, created_at, updated_at, completed_at
             FROM batch_jobs
             WHERE batch_id = :bid
+            AND vendor_code = :vendor_code
         """),
-        {"bid": batch_id},
+        {
+        "bid": batch_id,
+        "vendor_code": str(user_context["vendor_code"]),
+        }
     ).first()
 
     if result is None:
@@ -363,8 +415,16 @@ async def get_batch_invoices(
 
     # Verify batch exists
     batch = db.execute(
-        text("SELECT 1 FROM batch_jobs WHERE batch_id = :bid"),
-        {"bid": batch_id},
+    text("""
+        SELECT 1
+        FROM batch_jobs
+        WHERE batch_id = :bid
+          AND vendor_code = :vendor_code
+    """),
+    {
+        "bid": batch_id,
+        "vendor_code": str(user_context["vendor_code"]),
+    },
     ).first()
 
     if batch is None:
@@ -376,13 +436,23 @@ async def get_batch_invoices(
     # Get all items
     items = db.execute(
         text("""
-            SELECT id, document_id, row_number, invoice_number,
-                   status, error_message, processing_time_ms
-            FROM batch_invoice_items
-            WHERE batch_id = :bid
-            ORDER BY row_number
+            SELECT bii.id,
+            bii.document_id,
+            bii.row_number,
+            bii.invoice_number,
+            bii.status,
+            bii.error_message,
+            bii.processing_time_ms
+        FROM batch_invoice_items bii
+        JOIN batch_jobs bj ON bj.batch_id = bii.batch_id
+        WHERE bii.batch_id = :bid
+        AND bj.vendor_code = :vendor_code
+        ORDER BY bii.row_number
         """),
-        {"bid": batch_id},
+        {
+            "bid": batch_id,
+            "vendor_code": str(user_context["vendor_code"]),
+        }
     ).all()
 
     return BatchInvoicesResponse(
