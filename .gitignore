@@ -16,7 +16,7 @@ venv/
 
 infra/certs/*
 !infra/certs/.gitkeep
-
+infra/kafka/client.properties
 data/
 dist/
 build/
