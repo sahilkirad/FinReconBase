@@ -447,6 +447,7 @@ class InvoiceConsumer:
         finally:
             db.close()
 
+
         if database_vendor_code is None:
             raise ValueError(f"Batch not found: {batch_id}")
 
