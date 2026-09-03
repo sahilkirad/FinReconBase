@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     layer1_consumer_group: str = Field(default='layer1_extractor_group')
     layer1_max_concurrent: int = Field(default=3)
 
+    # Layer 2: Reconciliation Supervisor (LangGraph / Groq)
+    groq_rpm_limit: int = Field(default=28)  # Slight buffer under Groq's 30 RPM free tier
+    layer2_consumer_group: str = Field(default='layer2-supervisor-cg')
+    layer2_max_concurrent: int = Field(default=4)  # Isolated execution pool size
+    layer2_poll_interval_s: float = Field(default=3.0)  # DB boundary poller cadence
+    layer2_buffer_grace_polls: int = Field(default=10)  # Sealed-batch buffer drain grace
+    layer2_tds_category: str = Field(default='194C')  # Deterministic TDS slab for waterfall
+
     # Kafka topics
     raw_ingestion_topic: str = Field(default='invoice.processing.events')
     invoice_extracted_topic: str = Field(default='invoice.extracted.events')

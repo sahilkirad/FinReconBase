@@ -1,0 +1,394 @@
+[
+  {
+    "transaction_date": "2026-08-27",
+    "narration": "CREDIT/IMPS/300000000002/SWIFT LOGISTICS/INV-2026-0001",
+    "utr_number": "300000000002",
+    "transaction_type": "CREDIT",
+    "amount_paise": 205368700,
+    "closing_balance_paise": 205368700
+  },
+  {
+    "transaction_date": "2026-08-17",
+    "narration": "CREDIT/IMPS/300000000003/TRANSPORT SOLUTIONS INDIA/INV-2026-0002",
+    "utr_number": "300000000003",
+    "transaction_type": "CREDIT",
+    "amount_paise": 151490000,
+    "closing_balance_paise": 356858700
+  },
+  {
+    "transaction_date": "2026-08-08",
+    "narration": "CREDIT/IMPS/300000000004/TRANSPORT SOLUTIONS INDIA/INV-2026-0003",
+    "utr_number": "300000000004",
+    "transaction_type": "CREDIT",
+    "amount_paise": 71878300,
+    "closing_balance_paise": 428737000
+  },
+  {
+    "transaction_date": "2026-08-19",
+    "narration": "CREDIT/IMPS/300000000005/NEXUS LOGISTICS PVT LTD/INV-2026-0004",
+    "utr_number": "300000000005",
+    "transaction_type": "CREDIT",
+    "amount_paise": 103286100,
+    "closing_balance_paise": 532023100
+  },
+  {
+    "transaction_date": "2026-08-21",
+    "narration": "CREDIT/IMPS/300000000006/TRANSPORT SOLUTIONS INDIA/INV-2026-0005",
+    "utr_number": "300000000006",
+    "transaction_type": "CREDIT",
+    "amount_paise": 498357200,
+    "closing_balance_paise": 1030380300
+  },
+  {
+    "transaction_date": "2026-08-28",
+    "narration": "CREDIT/IMPS/300000000007/TRANSPORT SOLUTIONS INDIA/INV-2026-0006",
+    "utr_number": "300000000007",
+    "transaction_type": "CREDIT",
+    "amount_paise": 311683700,
+    "closing_balance_paise": 1342064000
+  },
+  {
+    "transaction_date": "2026-08-28",
+    "narration": "CREDIT/IMPS/300000000008/NEXUS LOGISTICS PVT LTD/INV-2026-0007",
+    "utr_number": "300000000008",
+    "transaction_type": "CREDIT",
+    "amount_paise": 305935500,
+    "closing_balance_paise": 1647999500
+  },
+  {
+    "transaction_date": "2026-08-20",
+    "narration": "CREDIT/IMPS/300000000009/FREIGHT EXPRESS CO/INV-2026-0008",
+    "utr_number": "300000000009",
+    "transaction_type": "CREDIT",
+    "amount_paise": 47567000,
+    "closing_balance_paise": 1695566500
+  },
+  {
+    "transaction_date": "2026-08-14",
+    "narration": "CREDIT/IMPS/300000000010/TRANSPORT SOLUTIONS INDIA/INV-2026-0010",
+    "utr_number": "300000000010",
+    "transaction_type": "CREDIT",
+    "amount_paise": 30670000,
+    "closing_balance_paise": 1726236500
+  },
+  {
+    "transaction_date": "2026-08-12",
+    "narration": "CREDIT/IMPS/300000000011/NEXUS LOGISTICS PVT LTD/INV-2026-0011",
+    "utr_number": "300000000011",
+    "transaction_type": "CREDIT",
+    "amount_paise": 256461400,
+    "closing_balance_paise": 1982697900
+  },
+  {
+    "transaction_date": "2026-08-20",
+    "narration": "CREDIT/IMPS/300000000012/TRANSPORT SOLUTIONS INDIA/INV-2026-0012",
+    "utr_number": "300000000012",
+    "transaction_type": "CREDIT",
+    "amount_paise": 153563200,
+    "closing_balance_paise": 2136261100
+  },
+  {
+    "transaction_date": "2026-08-15",
+    "narration": "CREDIT/IMPS/300000000013/TRANSPORT SOLUTIONS INDIA/INV-2026-0013",
+    "utr_number": "300000000013",
+    "transaction_type": "CREDIT",
+    "amount_paise": 119648900,
+    "closing_balance_paise": 2255910000
+  },
+  {
+    "transaction_date": "2026-08-27",
+    "narration": "CREDIT/IMPS/300000000014/SWIFT LOGISTICS/INV-2026-0014",
+    "utr_number": "300000000014",
+    "transaction_type": "CREDIT",
+    "amount_paise": 429279900,
+    "closing_balance_paise": 2685189900
+  },
+  {
+    "transaction_date": "2026-08-13",
+    "narration": "CREDIT/IMPS/300000000015/TRANSPORT SOLUTIONS INDIA/INV-2026-0015",
+    "utr_number": "300000000015",
+    "transaction_type": "CREDIT",
+    "amount_paise": 281142000,
+    "closing_balance_paise": 2966331900
+  },
+  {
+    "transaction_date": "2026-09-01",
+    "narration": "CREDIT/IMPS/300000000016/CARGO MOVERS LTD/INV-2026-0016",
+    "utr_number": "300000000016",
+    "transaction_type": "CREDIT",
+    "amount_paise": 17161400,
+    "closing_balance_paise": 2983493300
+  },
+  {
+    "transaction_date": "2026-08-22",
+    "narration": "CREDIT/IMPS/300000000017/NEXUS LOGISTICS PVT LTD/INV-2026-0017",
+    "utr_number": "300000000017",
+    "transaction_type": "CREDIT",
+    "amount_paise": 371417000,
+    "closing_balance_paise": 3354910300
+  },
+  {
+    "transaction_date": "2026-08-10",
+    "narration": "CREDIT/IMPS/300000000018/FREIGHT EXPRESS CO/INV-2026-0018",
+    "utr_number": "300000000018",
+    "transaction_type": "CREDIT",
+    "amount_paise": 214377400,
+    "closing_balance_paise": 3569287700
+  },
+  {
+    "transaction_date": "2026-08-29",
+    "narration": "CREDIT/IMPS/300000000019/TRANSPORT SOLUTIONS INDIA/INV-2026-0019",
+    "utr_number": "300000000019",
+    "transaction_type": "CREDIT",
+    "amount_paise": 510874400,
+    "closing_balance_paise": 4080162100
+  },
+  {
+    "transaction_date": "2026-08-21",
+    "narration": "CREDIT/IMPS/300000000020/SWIFT LOGISTICS/INV-2026-0020",
+    "utr_number": "300000000020",
+    "transaction_type": "CREDIT",
+    "amount_paise": 249535000,
+    "closing_balance_paise": 4329697100
+  },
+  {
+    "transaction_date": "2026-08-28",
+    "narration": "CREDIT/IMPS/300000000021/NEXUS LOGISTICS PVT LTD/INV-2026-0021",
+    "utr_number": "300000000021",
+    "transaction_type": "CREDIT",
+    "amount_paise": 321638300,
+    "closing_balance_paise": 4651335400
+  },
+  {
+    "transaction_date": "2026-08-18",
+    "narration": "CREDIT/IMPS/300000000022/CARGO MOVERS LTD/INV-2026-0022",
+    "utr_number": "300000000022",
+    "transaction_type": "CREDIT",
+    "amount_paise": 572833800,
+    "closing_balance_paise": 5224169200
+  },
+  {
+    "transaction_date": "2026-08-22",
+    "narration": "CREDIT/IMPS/300000000023/FREIGHT EXPRESS CO/INV-2026-0023",
+    "utr_number": "300000000023",
+    "transaction_type": "CREDIT",
+    "amount_paise": 322158400,
+    "closing_balance_paise": 5546327600
+  },
+  {
+    "transaction_date": "2026-08-04",
+    "narration": "CREDIT/IMPS/300000000024/TRANSPORT SOLUTIONS INDIA/INV-2026-0024",
+    "utr_number": "300000000024",
+    "transaction_type": "CREDIT",
+    "amount_paise": 15548800,
+    "closing_balance_paise": 5561876400
+  },
+  {
+    "transaction_date": "2026-08-28",
+    "narration": "CREDIT/IMPS/300000000025/NEXUS LOGISTICS PVT LTD/INV-2026-0025",
+    "utr_number": "300000000025",
+    "transaction_type": "CREDIT",
+    "amount_paise": 38750500,
+    "closing_balance_paise": 5600626900
+  },
+  {
+    "transaction_date": "2026-08-15",
+    "narration": "CREDIT/IMPS/300000000026/NEXUS LOGISTICS PVT LTD/INV-2026-0026",
+    "utr_number": "300000000026",
+    "transaction_type": "CREDIT",
+    "amount_paise": 565280100,
+    "closing_balance_paise": 6165907000
+  },
+  {
+    "transaction_date": "2026-08-08",
+    "narration": "CREDIT/IMPS/300000000027/CARGO MOVERS LTD/INV-2026-0027",
+    "utr_number": "300000000027",
+    "transaction_type": "CREDIT",
+    "amount_paise": 329826100,
+    "closing_balance_paise": 6495733100
+  },
+  {
+    "transaction_date": "2026-08-09",
+    "narration": "CREDIT/IMPS/300000000028/SWIFT LOGISTICS/INV-2026-0028",
+    "utr_number": "300000000028",
+    "transaction_type": "CREDIT",
+    "amount_paise": 149786500,
+    "closing_balance_paise": 6645519600
+  },
+  {
+    "transaction_date": "2026-08-25",
+    "narration": "CREDIT/IMPS/300000000029/FREIGHT EXPRESS CO/INV-2026-0029",
+    "utr_number": "300000000029",
+    "transaction_type": "CREDIT",
+    "amount_paise": 237822100,
+    "closing_balance_paise": 6883341700
+  },
+  {
+    "transaction_date": "2026-09-02",
+    "narration": "CREDIT/IMPS/300000000030/CARGO MOVERS LTD/INV-2026-0030",
+    "utr_number": "300000000030",
+    "transaction_type": "CREDIT",
+    "amount_paise": 308206700,
+    "closing_balance_paise": 7191548400
+  },
+  {
+    "transaction_date": "2026-08-26",
+    "narration": "CREDIT/IMPS/300000000031/FREIGHT EXPRESS CO/INV-2026-0031",
+    "utr_number": "300000000031",
+    "transaction_type": "CREDIT",
+    "amount_paise": 51869100,
+    "closing_balance_paise": 7243417500
+  },
+  {
+    "transaction_date": "2026-08-31",
+    "narration": "CREDIT/IMPS/300000000032/FREIGHT EXPRESS CO/INV-2026-0032",
+    "utr_number": "300000000032",
+    "transaction_type": "CREDIT",
+    "amount_paise": 548231700,
+    "closing_balance_paise": 7791649200
+  },
+  {
+    "transaction_date": "2026-09-02",
+    "narration": "CREDIT/IMPS/300000000033/NEXUS LOGISTICS PVT LTD/INV-2026-0033",
+    "utr_number": "300000000033",
+    "transaction_type": "CREDIT",
+    "amount_paise": 155056500,
+    "closing_balance_paise": 7946705700
+  },
+  {
+    "transaction_date": "2026-08-04",
+    "narration": "CREDIT/IMPS/300000000034/TRANSPORT SOLUTIONS INDIA/INV-2026-0034",
+    "utr_number": "300000000034",
+    "transaction_type": "CREDIT",
+    "amount_paise": 236740600,
+    "closing_balance_paise": 8183446300
+  },
+  {
+    "transaction_date": "2026-08-05",
+    "narration": "CREDIT/IMPS/300000000035/FREIGHT EXPRESS CO/INV-2026-0035",
+    "utr_number": "300000000035",
+    "transaction_type": "CREDIT",
+    "amount_paise": 151236700,
+    "closing_balance_paise": 8334683000
+  },
+  {
+    "transaction_date": "2026-08-16",
+    "narration": "CREDIT/IMPS/300000000036/FREIGHT EXPRESS CO/INV-2026-0036",
+    "utr_number": "300000000036",
+    "transaction_type": "CREDIT",
+    "amount_paise": 210152500,
+    "closing_balance_paise": 8544835500
+  },
+  {
+    "transaction_date": "2026-08-04",
+    "narration": "CREDIT/IMPS/300000000037/FREIGHT EXPRESS CO/INV-2026-0037",
+    "utr_number": "300000000037",
+    "transaction_type": "CREDIT",
+    "amount_paise": 872583400,
+    "closing_balance_paise": 9417418900
+  },
+  {
+    "transaction_date": "2026-08-19",
+    "narration": "CREDIT/IMPS/300000000038/SWIFT LOGISTICS/INV-2026-0038",
+    "utr_number": "300000000038",
+    "transaction_type": "CREDIT",
+    "amount_paise": 258392000,
+    "closing_balance_paise": 9675810900
+  },
+  {
+    "transaction_date": "2026-08-08",
+    "narration": "CREDIT/IMPS/300000000039/NEXUS LOGISTICS PVT LTD/INV-2026-0039",
+    "utr_number": "300000000039",
+    "transaction_type": "CREDIT",
+    "amount_paise": 536166600,
+    "closing_balance_paise": 10211977500
+  },
+  {
+    "transaction_date": "2026-08-20",
+    "narration": "CREDIT/IMPS/300000000040/CARGO MOVERS LTD/INV-2026-0040",
+    "utr_number": "300000000040",
+    "transaction_type": "CREDIT",
+    "amount_paise": 111073400,
+    "closing_balance_paise": 10323050900
+  },
+  {
+    "transaction_date": "2026-09-02",
+    "narration": "CREDIT/IMPS/300000000041/CARGO MOVERS LTD/INV-2026-0041",
+    "utr_number": "300000000041",
+    "transaction_type": "CREDIT",
+    "amount_paise": 2327600,
+    "closing_balance_paise": 10325378500
+  },
+  {
+    "transaction_date": "2026-08-09",
+    "narration": "CREDIT/IMPS/300000000042/SWIFT LOGISTICS/INV-2026-0042",
+    "utr_number": "300000000042",
+    "transaction_type": "CREDIT",
+    "amount_paise": 427389800,
+    "closing_balance_paise": 10752768300
+  },
+  {
+    "transaction_date": "2026-08-10",
+    "narration": "CREDIT/IMPS/300000000043/NEXUS LOGISTICS PVT LTD/INV-2026-0043",
+    "utr_number": "300000000043",
+    "transaction_type": "CREDIT",
+    "amount_paise": 253051800,
+    "closing_balance_paise": 11005820100
+  },
+  {
+    "transaction_date": "2026-08-12",
+    "narration": "CREDIT/IMPS/300000000044/SWIFT LOGISTICS/INV-2026-0044",
+    "utr_number": "300000000044",
+    "transaction_type": "CREDIT",
+    "amount_paise": 67849000,
+    "closing_balance_paise": 11073669100
+  },
+  {
+    "transaction_date": "2026-08-04",
+    "narration": "CREDIT/IMPS/300000000045/SWIFT LOGISTICS/INV-2026-0045",
+    "utr_number": "300000000045",
+    "transaction_type": "CREDIT",
+    "amount_paise": 180456900,
+    "closing_balance_paise": 11254126000
+  },
+  {
+    "transaction_date": "2026-08-18",
+    "narration": "CREDIT/IMPS/300000000046/SWIFT LOGISTICS/INV-2026-0046",
+    "utr_number": "300000000046",
+    "transaction_type": "CREDIT",
+    "amount_paise": 268758300,
+    "closing_balance_paise": 11522884300
+  },
+  {
+    "transaction_date": "2026-08-13",
+    "narration": "CREDIT/IMPS/300000000047/TRANSPORT SOLUTIONS INDIA/INV-2026-0047",
+    "utr_number": "300000000047",
+    "transaction_type": "CREDIT",
+    "amount_paise": 406145700,
+    "closing_balance_paise": 11929030000
+  },
+  {
+    "transaction_date": "2026-08-20",
+    "narration": "CREDIT/IMPS/300000000048/CARGO MOVERS LTD/INV-2026-0048",
+    "utr_number": "300000000048",
+    "transaction_type": "CREDIT",
+    "amount_paise": 200425600,
+    "closing_balance_paise": 12129455600
+  },
+  {
+    "transaction_date": "2026-08-12",
+    "narration": "CREDIT/IMPS/300000000049/TRANSPORT SOLUTIONS INDIA/INV-2026-0049",
+    "utr_number": "300000000049",
+    "transaction_type": "CREDIT",
+    "amount_paise": 266370100,
+    "closing_balance_paise": 12395825700
+  },
+  {
+    "transaction_date": "2026-08-24",
+    "narration": "CREDIT/IMPS/300000000050/FREIGHT EXPRESS CO/INV-2026-0050",
+    "utr_number": "300000000050",
+    "transaction_type": "CREDIT",
+    "amount_paise": 788396000,
+    "closing_balance_paise": 13184221700
+  }
+]

@@ -149,6 +149,25 @@ services:
     deploy:
       replicas: 3
 
+  recon-supervisor:
+    build:
+      context: ./backend
+    container_name: finrecon-recon-supervisor
+    command: ["python", "-m", "app.workers.recon_supervisor"]
+    env_file:
+      - .env
+    volumes:
+      - ./infra/certs:/app/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+
 volumes:
   finrecon_postgres_data:
   finrecon_kafka_data:
