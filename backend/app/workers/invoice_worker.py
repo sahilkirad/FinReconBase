@@ -14,9 +14,10 @@ Architecture:
 - Publishes results to invoice.extracted.events
 - Updates batch progress in DB
 
-Rate Limiting:
-- Uses VLMRateLimiter (thread-based, 10 RPM per worker)
-- For distributed rate limiting, use RedisTokenBucketRateLimiter
+Rate Limiting (3-Pillar Architecture):
+- Threading Semaphore (layer1_max_concurrent)
+- Redis Token Bucket (gemini_rpm_limit, shared across all workers)
+- Exponential Backoff with Full Jitter on 429 errors
 
 Environment Variables:
 - KAFKA_BOOTSTRAP_SERVERS: Kafka broker address

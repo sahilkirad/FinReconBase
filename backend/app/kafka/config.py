@@ -34,17 +34,13 @@ class KafkaConfig:
     ssl_keyfile: str | None = None
     
     # Consumer groups
-    invoice_consumer_group: str = "finrecon-invoice-processor"
+    invoice_consumer_group: str = "layer1_extractor_group"
     
     # Topics
     invoice_processing_topic: str = INVOICE_PROCESSING_TOPIC
     invoice_extracted_topic: str = INVOICE_EXTRACTED_TOPIC
     reconciliation_completed_topic: str = RECONCILIATION_COMPLETED_TOPIC
     reconciliation_dlq_topic: str = RECONCILIATION_DLQ_TOPIC
-    
-    # Processing limits
-    max_concurrent_vlm_calls: int = 10
-    batch_size: int = 50
     
     @classmethod
     def from_settings(cls) -> "KafkaConfig":
@@ -56,6 +52,7 @@ class KafkaConfig:
             ssl_cafile=settings.kafka_ssl_ca_location,
             ssl_certfile=settings.kafka_ssl_certificate_location,
             ssl_keyfile=settings.kafka_ssl_key_location,
+            invoice_consumer_group=settings.layer1_consumer_group,
         )
     
     def get_producer_config(self) -> dict:
@@ -64,8 +61,9 @@ class KafkaConfig:
             "bootstrap_servers": self.bootstrap_servers,
             "client_id": "finrecon-producer",
             "acks": "all",  # Wait for all replicas
-            "retries": 3,
-            "retry_backoff_ms": 100,
+            # retries=0 at the client level: we own the retry lifecycle
+            # (manual Full Jitter exponential backoff in vlm_optimizer)
+            "retries": 0,
             "linger_ms": 10,  # Batch for efficiency
             "batch_size": 16384,
         }

@@ -43,8 +43,9 @@ class OutboxPoller:
             "bootstrap_servers": self.settings.kafka_bootstrap_servers,
             "client_id": "outbox-poller",
             "acks": "all",
-            "retries": 3,
-            "retry_backoff_ms": 100,
+            # retries=0 at the client level: the outbox poller owns the
+            # retry lifecycle (marks FAILED and retries via available_at)
+            "retries": 0,
         }
 
         if self.settings.kafka_security_protocol == "SSL":

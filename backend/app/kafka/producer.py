@@ -39,25 +39,29 @@ def publish_invoice_event(
     invoice_number: str,
     processing_status: str,
     topic: str | None = None,
+    extracted_json: dict | None = None,
+    batch_id: str | None = None,
 ) -> str:
     """
-    Publish an invoice extracted event to Kafka.
-    
+    Publish an invoice extracted event to Kafka (Fan-In to Layer 2).
+
     Args:
         document_id: UUID of the extracted invoice
         vendor_code: Vendor code
         invoice_number: Invoice number
         processing_status: VALIDATED or EXCEPTION_FLAGGED
         topic: Kafka topic (defaults to invoice.extracted.events)
-    
+        extracted_json: Full extracted invoice payload (JSON) for Layer 2
+        batch_id: Batch job UUID (None for single uploads)
+
     Returns:
         Event ID (for idempotency tracking)
     """
     config = KafkaConfig.from_settings()
     target_topic = topic or config.invoice_extracted_topic
-    
+
     event_id = f"evt_{uuid.uuid4()}"
-    
+
     event_payload = {
         "specversion": "1.0",
         "type": "invoice.extracted",
@@ -69,9 +73,11 @@ def publish_invoice_event(
             "vendor_code": vendor_code,
             "invoice_number": invoice_number,
             "processing_status": processing_status,
+            "batch_id": batch_id,
+            "extracted_invoice": extracted_json,
         },
     }
-    
+
     try:
         producer = get_producer()
         future = producer.send(
@@ -80,7 +86,7 @@ def publish_invoice_event(
             value=json.dumps(event_payload).encode("utf-8"),
         )
         record_metadata = future.get(timeout=10)
-        
+
         logger.info(
             "Invoice event published",
             extra={
@@ -88,137 +94,18 @@ def publish_invoice_event(
                 "topic": record_metadata.topic,
                 "partition": record_metadata.partition,
                 "offset": record_metadata.offset,
+                "batch_id": batch_id,
+                "document_id": document_id,
             },
         )
         return event_id
-        
+
     except Exception as e:
         logger.error(
             "Failed to publish invoice event",
             extra={"event_id": event_id, "error": str(e)},
         )
         raise
-
-
-def publish_batch_event(
-    batch_id: str,
-    vendor_code: str,
-    total_invoices: int,
-    source_type: str,
-    pages: list[dict] | None = None,
-) -> list[str]:
-    """
-    Publish batch processing events to Kafka (Fan-Out pattern).
-
-    For PDF batches: publishes one event per page with file path (Claim Check).
-    For CSV batches: publishes one event with the CSV file path.
-
-    Args:
-        batch_id: UUID of the batch job
-        vendor_code: Vendor code
-        total_invoices: Total number of invoices/pages in batch
-        source_type: 'pdf' or 'csv'
-        pages: List of page dicts with file_path, file_size, page_index
-
-    Returns:
-        List of event IDs published
-    """
-    config = KafkaConfig.from_settings()
-    event_ids = []
-
-    if pages:
-        # Fan-Out: One event per page (Claim Check pattern)
-        for page in pages:
-            event_id = f"evt_batch_{uuid.uuid4()}"
-
-            event_payload = {
-                "specversion": "1.0",
-                "type": "batch.page.ingestion",
-                "source": "/layer1/batch",
-                "id": event_id,
-                "time": datetime.now(timezone.utc).isoformat(),
-                "data": {
-                    "batch_id": batch_id,
-                    "vendor_code": vendor_code,
-                    "source_type": source_type,
-                    "page_index": page["page_index"],
-                    "file_path": page["file_path"],  # Claim Check!
-                    "file_size": page["file_size"],
-                },
-            }
-
-            try:
-                producer = get_producer()
-                future = producer.send(
-                    topic=config.invoice_processing_topic,
-                    key=vendor_code.encode("utf-8"),
-                    value=json.dumps(event_payload).encode("utf-8"),
-                )
-                future.get(timeout=10)
-                event_ids.append(event_id)
-
-                logger.debug(
-                    "Page event published",
-                    extra={
-                        "event_id": event_id,
-                        "batch_id": batch_id,
-                        "page_index": page["page_index"],
-                    },
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to publish page event",
-                    extra={"event_id": event_id, "error": str(e)},
-                )
-                raise
-
-        logger.info(
-            "Batch events published (Fan-Out)",
-            extra={
-                "batch_id": batch_id,
-                "events_published": len(event_ids),
-            },
-        )
-    else:
-        # Fallback: single batch event (no pages provided)
-        event_id = f"evt_batch_{uuid.uuid4()}"
-
-        event_payload = {
-            "specversion": "1.0",
-            "type": "batch.processing.started",
-            "source": "/layer1/batch",
-            "id": event_id,
-            "time": datetime.now(timezone.utc).isoformat(),
-            "data": {
-                "batch_id": batch_id,
-                "vendor_code": vendor_code,
-                "total_invoices": total_invoices,
-                "source_type": source_type,
-            },
-        }
-
-        try:
-            producer = get_producer()
-            future = producer.send(
-                topic=config.invoice_processing_topic,
-                key=vendor_code.encode("utf-8"),
-                value=json.dumps(event_payload).encode("utf-8"),
-            )
-            future.get(timeout=10)
-            event_ids.append(event_id)
-
-            logger.info(
-                "Batch event published",
-                extra={"event_id": event_id, "batch_id": batch_id},
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to publish batch event",
-                extra={"event_id": event_id, "error": str(e)},
-            )
-            raise
-
-    return event_ids
 
 
 def close_producer():
@@ -228,4 +115,4 @@ def close_producer():
         _producer.flush()
         _producer.close()
         _producer = None
-        logger.info("Kafka producer closed")
+        logger.info("Kafka producer closed")

@@ -31,3 +31,4 @@ models/*.onnx
 models/*.bin
 models/*.pt
 models/*.pth
+models/*.onnx.data

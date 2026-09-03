@@ -1,7 +1,8 @@
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -40,9 +41,25 @@ class Settings(BaseSettings):
 
     max_upload_size_mb: int = Field(default=10)
     max_batch_size_mb: int = Field(default=100)
-    allowed_upload_extensions: list[str] = Field(default=['.pdf', '.jpg', '.jpeg', '.png'])
-    allowed_upload_mime_types: list[str] = Field(default=['application/pdf', 'image/jpeg', 'image/png'])
-    allowed_batch_extensions: list[str] = Field(default=['.pdf', '.csv'])
+    # NoDecode: pydantic-settings would otherwise json.loads() these
+    # complex fields before validation; the comma-separated env format
+    # (e.g. ".pdf,.jpg") is parsed by the validator below instead.
+    allowed_upload_extensions: Annotated[list[str], NoDecode] = Field(default=['.pdf', '.jpg', '.jpeg', '.png'])
+    allowed_upload_mime_types: Annotated[list[str], NoDecode] = Field(default=['application/pdf', 'image/jpeg', 'image/png'])
+    allowed_batch_extensions: Annotated[list[str], NoDecode] = Field(default=['.pdf', '.jpg', '.jpeg', '.png'])
+
+    @field_validator(
+        'allowed_upload_extensions',
+        'allowed_upload_mime_types',
+        'allowed_batch_extensions',
+        mode='before',
+    )
+    @classmethod
+    def _parse_list_from_env(cls, v):
+        # Accept both comma-separated strings (env convention) and JSON arrays.
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(',') if item.strip()]
+        return v
 
     # Blur detection threshold (Laplacian variance)
     blur_threshold: float = Field(default=100.0)

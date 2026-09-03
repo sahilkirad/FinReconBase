@@ -198,3 +198,38 @@ class TestBatchAPIEndpoint:
         )
         # Should fail with UNSUPPORTED_FILE_TYPE
         assert response.status_code == 422
+
+    def test_upload_rejects_csv(self):
+        """CSV support is removed - .csv must be rejected with 422."""
+        import os
+        os.environ["GOOGLE_OAUTH_CLIENT_ID"] = "test"
+        os.environ["JWT_SECRET_KEY"] = "test-secret"
+        os.environ["GROQ_API_KEY"] = "test"
+        os.environ["GROQ_MODEL"] = "test"
+
+        from fastapi.testclient import TestClient
+        from app.core.config import get_settings
+        from app.core.security import create_access_token
+        from app.main import create_app
+
+        settings = get_settings()
+        app = create_app()
+        client = TestClient(app)
+
+        token = create_access_token(
+            subject="user_123",
+            vendor_code="VEND_TEST_001",
+            role="ADMIN",
+            settings=settings,
+        )
+
+        csv_content = b"invoice_number,supplier_name,total_amount\nINV-1,Test Supplier,1000"
+        response = client.post(
+            "/invoices/batch",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("invoices.csv", csv_content, "text/csv")},
+            data={"vendor_code": "VEND_TEST_001"},
+        )
+        # CSV must be rejected with UNSUPPORTED_FILE_TYPE
+        assert response.status_code == 422
+        assert "UNSUPPORTED_FILE_TYPE" in response.text
