@@ -137,3 +137,92 @@ class TestFullGuardrail:
         # The actual test would mock the classifier
         # For production, this test requires the model to be present
         pass
+
+
+class TestFailClosedGuardrail:
+    """Structural classification is compulsory — missing model fails closed."""
+
+    def test_guardrail_rejects_when_model_missing(self, tmp_path):
+        """Model missing -> upload must be REJECTED, not silently skipped."""
+        guardrail = DocumentGuardrail()
+
+        pdf_file = tmp_path / "invoice.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4" + b"\x00" * 100)
+
+        with patch(
+            "app.tools.doc_classifier.get_classifier",
+            side_effect=FileNotFoundError("model not found"),
+        ):
+            with pytest.raises(Layer1Exception) as exc_info:
+                guardrail.run_guardrail(pdf_file, 1024, "application/pdf")
+
+        assert exc_info.value.detail["error_code"] == \
+            Layer1ErrorCode.INVALID_DOCUMENT_CLASSIFICATION.value
+
+    def test_guardrail_passes_invoice_above_threshold(self, tmp_path):
+        """Invoice classified above threshold passes MIME + anchor gates."""
+        import fitz
+
+        guardrail = DocumentGuardrail()
+
+        # Build a real PDF with a text layer containing financial anchors
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "TAX INVOICE Total Amount Due")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        pdf_file = tmp_path / "invoice.pdf"
+        pdf_file.write_bytes(pdf_bytes)
+
+        mock_classifier = MagicMock()
+        mock_classifier.classify.return_value = ("invoice", 0.98)
+
+        with patch(
+            "app.tools.doc_classifier.get_classifier",
+            return_value=mock_classifier,
+        ):
+            label, confidence, anchor_found = guardrail.run_guardrail(
+                pdf_file, len(pdf_bytes), "application/pdf"
+            )
+
+        assert label == "invoice"
+        assert confidence == 0.98
+        assert anchor_found is True
+
+    def test_guardrail_rejects_non_invoice_document(self, tmp_path):
+        """Non-invoice classification must be rejected even above threshold."""
+        guardrail = DocumentGuardrail()
+
+        pdf_file = tmp_path / "invoice.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4" + b"\x00" * 100)
+
+        mock_classifier = MagicMock()
+        mock_classifier.classify.return_value = ("bank_statement", 0.98)
+
+        with patch(
+            "app.tools.doc_classifier.get_classifier",
+            return_value=mock_classifier,
+        ):
+            with pytest.raises(Layer1Exception) as exc_info:
+                guardrail.run_guardrail(pdf_file, 1024, "application/pdf")
+
+        assert exc_info.value.detail["error_code"] == \
+            Layer1ErrorCode.INVALID_DOCUMENT_CLASSIFICATION.value
+
+
+class TestBatchSizeOverride:
+    """Batch endpoint can raise the size gate via max_size_mb."""
+
+    def test_batch_size_override_allows_larger_files(self, tmp_path):
+        """max_size_mb override should allow files above the single-upload limit."""
+        guardrail = DocumentGuardrail()
+
+        large_file = tmp_path / "large_invoice.pdf"
+        large_file.write_bytes(b"%PDF-1.4" + b"x" * (11 * 1024 * 1024))  # 11MB
+
+        # 11MB exceeds the 10MB single-upload default but is under the batch
+        # limit (100MB) — passing max_size_mb=100 must NOT raise.
+        guardrail.validate_mime_and_size(
+            large_file, 11 * 1024 * 1024, "application/pdf", max_size_mb=100
+        )

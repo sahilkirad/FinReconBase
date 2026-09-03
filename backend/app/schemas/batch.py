@@ -15,7 +15,7 @@ class BatchUploadResponse(BaseModel):
     """Response after uploading a batch of invoices."""
     batch_id: UUID
     vendor_code: str
-    source_type: str  # 'pdf' or 'csv'
+    source_type: str  # 'pdf' (both PDF and image batches; CSV support removed)
     filename: Optional[str] = None
     total_invoices: int
     valid_invoices: int

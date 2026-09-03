@@ -5,7 +5,7 @@ Provides model routing, Redis-based distributed rate limiting,
 and Full Jitter exponential backoff for VLM API calls.
 
 3-Pillar Rate Limiting Architecture:
-1. Asyncio Semaphore — limits concurrent in-flight requests per worker
+1. Threading Semaphore — limits concurrent in-flight requests per worker
 2. Redis Token Bucket — enforces RPM across ALL workers (distributed)
 3. Exponential Backoff with Full Jitter — handles 429 retries safely
 
@@ -20,14 +20,12 @@ RULE: Gemini is NEVER used for mathematical validation.
 All financial math is performed by our local Python checksum layer.
 """
 
-import asyncio
 import logging
 import random
 import re
+import threading
 import time
 from typing import Optional
-
-import numpy as np
 
 from app.core.config import get_settings
 
@@ -86,6 +84,7 @@ class RedisTokenBucketRateLimiter:
     from consuming the entire API quota.
 
     Uses atomic Redis DECR to prevent race conditions across workers.
+    Synchronous implementation for the thread-based Kafka consumer.
     """
 
     def __init__(
@@ -99,65 +98,75 @@ class RedisTokenBucketRateLimiter:
         self.bucket_key = bucket_key
         self.redis = None
 
-    async def connect(self):
-        """Connect to Redis and initialize the token bucket."""
-        import redis.asyncio as aioredis
+    def connect(self):
+        """Connect to Redis and initialize the token bucket.
 
-        self.redis = aioredis.from_url(
+        The bucket is only initialized if it does not already exist,
+        so a worker joining mid-window does not reset the shared quota.
+        """
+        import redis
+
+        self.redis = redis.Redis.from_url(
             self.redis_url,
             decode_responses=True,
         )
+        self.redis.ping()
 
-        # Initialize bucket with full tokens
-        pipe = self.redis.pipeline()
-        pipe.set(self.bucket_key, self.rpm)
-        pipe.expire(self.bucket_key, 60)
-        await pipe.execute()
+        if not self.redis.exists(self.bucket_key):
+            pipe = self.redis.pipeline()
+            pipe.set(self.bucket_key, self.rpm)
+            pipe.expire(self.bucket_key, 60)
+            pipe.execute()
 
-        logger.info("Redis rate limiter connected", rpm=self.rpm)
+        logger.info(
+            "Redis rate limiter connected",
+            extra={"rpm": self.rpm, "bucket_key": self.bucket_key},
+        )
 
-    async def acquire(self) -> float:
+    def acquire(self) -> None:
         """Acquire a token from the bucket.
 
-        Returns the wait time (0.0 if token available immediately).
-        If bucket is empty, sleeps until a token is available.
-
-        Uses atomic Redis DECR to prevent race conditions across workers.
+        Blocks until a token is available. Uses atomic Redis DECR to
+        prevent race conditions across workers. If the bucket is empty,
+        the caller sleeps until the 60-second window resets.
         """
         while True:
             # Atomic decrement
-            tokens = await self.redis.decr(self.bucket_key)
+            tokens = self.redis.decr(self.bucket_key)
 
             if tokens >= 0:
                 # Token acquired successfully
-                return 0.0
+                return
 
             # No tokens available — restore the decremented value
-            await self.redis.incr(self.bucket_key)
+            self.redis.incr(self.bucket_key)
 
             # Check TTL on the window
-            ttl = await self.redis.ttl(self.bucket_key)
+            ttl = self.redis.ttl(self.bucket_key)
             if ttl <= 0:
                 # Window expired, reset bucket
                 pipe = self.redis.pipeline()
                 pipe.set(self.bucket_key, self.rpm)
                 pipe.expire(self.bucket_key, 60)
-                await pipe.execute()
+                pipe.execute()
                 continue
 
             # Wait for the window to reset
             wait_time = ttl + 0.1  # Small buffer to avoid edge case
             logger.info(
                 "Rate limit reached, waiting",
-                wait_seconds=round(wait_time, 1),
-                remaining_tokens=max(0, tokens),
+                extra={
+                    "wait_seconds": round(wait_time, 1),
+                    "remaining_tokens": max(0, tokens),
+                },
             )
-            await asyncio.sleep(wait_time)
+            time.sleep(wait_time)
 
-    async def close(self):
+    def close(self):
         """Close Redis connection."""
         if self.redis:
-            await self.redis.close()
+            self.redis.close()
+            self.redis = None
 
 
 # =============================================================================
@@ -303,25 +312,30 @@ def retry_with_backoff(
 
 def _extract_retry_after(error_str: str) -> Optional[float]:
     """Extract Retry-After header value from error response."""
-    match = re.search(r"retry-after[:\s]+(\d+)", error_str, re.IGNORECASE)
+    match = re.search(r"retry-after[:\\s]+(\\d+)", error_str, re.IGNORECASE)
     if match:
         return float(match.group(1))
     return None
 
 
 # =============================================================================
-# Async Rate-Limited VLM Client (for Worker)
+# Synchronous Rate-Limited VLM Client (for Kafka Consumer)
 # =============================================================================
 
 
 class RateLimitedGeminiClient:
-    """Async wrapper combining Semaphore + Redis Token Bucket + Full Jitter.
+    """Synchronous wrapper combining Semaphore + Redis Token Bucket + Full Jitter.
+
+    The Kafka consumer is a thread-based (synchronous) loop, so this client
+    is synchronous. Concurrency is controlled per process with a threading
+    semaphore; the global RPM quota is enforced across ALL workers via the
+    shared Redis token bucket.
 
     Usage in worker:
         client = RateLimitedGeminiClient(max_concurrent=3, rpm=15)
-        await client.initialize()
-        result = await client.call_with_retry(my_async_function, arg1, arg2)
-        await client.close()
+        client.initialize()
+        result = client.call(my_function, arg1, arg2)
+        client.close()
     """
 
     def __init__(
@@ -332,10 +346,10 @@ class RateLimitedGeminiClient:
         max_retries: int = 5,
         base_delay: float = 1.0,
     ):
-        # Pillar 1: Asyncio Semaphore (concurrency control)
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        # Pillar 1: Threading Semaphore (concurrency control)
+        self.semaphore = threading.BoundedSemaphore(max_concurrent)
 
-        # Pillar 2: Redis Token Bucket (RPM enforcement)
+        # Pillar 2: Redis Token Bucket (RPM enforcement, shared across workers)
         self.rate_limiter = RedisTokenBucketRateLimiter(
             rpm=rpm,
             redis_url=redis_url,
@@ -345,22 +359,27 @@ class RateLimitedGeminiClient:
         self.max_retries = max_retries
         self.base_delay = base_delay
 
-    async def initialize(self):
-        """Connect to Redis."""
+    def initialize(self):
+        """Connect to Redis.
+
+        If Redis is unavailable, falls back to the in-memory rate limiter
+        so the pipeline keeps running (RPM enforcement degrades to
+        per-process instead of global).
+        """
         try:
-            await self.rate_limiter.connect()
+            self.rate_limiter.connect()
         except Exception as e:
             logger.warning(
                 "Redis not available, falling back to in-memory rate limiter",
-                error=str(e),
+                extra={"error": str(e)},
             )
             self.rate_limiter = None
 
-    async def call_with_retry(self, func, *args, **kwargs):
-        """Execute an async function with all 3 rate limiting pillars.
+    def call(self, func, *args, **kwargs):
+        """Execute a synchronous function with all 3 rate limiting pillars.
 
         Args:
-            func: Async function to call
+            func: Callable to invoke
             *args: Positional arguments
             **kwargs: Keyword arguments
 
@@ -374,24 +393,23 @@ class RateLimitedGeminiClient:
 
         for attempt in range(self.max_retries):
             # Pillar 1: Acquire semaphore (limits concurrent requests)
-            async with self.semaphore:
+            with self.semaphore:
                 # Pillar 2: Acquire token from rate limiter
                 if self.rate_limiter:
-                    await self.rate_limiter.acquire()
+                    self.rate_limiter.acquire()
                 else:
                     # Fallback: in-memory rate limiter
                     _vlm_rate_limiter.acquire()
 
                 try:
-                    result = await func(*args, **kwargs)
-                    return result
+                    return func(*args, **kwargs)
 
                 except Exception as e:
                     last_exception = e
                     error_str = str(e).lower()
 
                     # Check if it's a 429 rate limit error
-                    if "429" in error_str or "rate" in error_str.lower():
+                    if "429" in error_str or "rate" in error_str:
                         # Pillar 3: Exponential Backoff with Full Jitter
                         retry_after = _extract_retry_after(error_str)
 
@@ -402,17 +420,19 @@ class RateLimitedGeminiClient:
                             # Wait = random_uniform(0, Base_Delay * 2^Attempt)
                             wait_time = random.uniform(
                                 0,
-                                self.base_delay * (2 ** attempt),
+                                min(self.base_delay * (2 ** attempt), 30.0),
                             )
 
                         logger.warning(
                             "Rate limited, retrying with backoff",
-                            attempt=attempt + 1,
-                            max_retries=self.max_retries,
-                            wait_seconds=round(wait_time, 2),
-                            error=error_str[:200],
+                            extra={
+                                "attempt": attempt + 1,
+                                "max_retries": self.max_retries,
+                                "wait_seconds": round(wait_time, 2),
+                                "error": error_str[:200],
+                            },
                         )
-                        await asyncio.sleep(wait_time)
+                        time.sleep(wait_time)
                     else:
                         # Non-rate-limit error — raise immediately
                         raise
@@ -422,46 +442,7 @@ class RateLimitedGeminiClient:
             f"{last_exception}"
         )
 
-    async def close(self):
+    def close(self):
         """Cleanup connections."""
         if self.rate_limiter:
-            await self.rate_limiter.close()
-
-
-# =============================================================================
-# Optimization Stats
-# =============================================================================
-
-
-class OptimizationStats:
-    """Track optimization metrics for monitoring."""
-
-    def __init__(self):
-        self.total_calls = 0
-        self.cache_hits = 0
-        self.cache_misses = 0
-        self.rate_limit_waits = 0
-        self.retries = 0
-        self.total_input_tokens_saved = 0
-
-    def record_call(self, cached: bool = False, tokens_saved: int = 0):
-        """Record a VLM call."""
-        self.total_calls += 1
-        if cached:
-            self.cache_hits += 1
-        else:
-            self.cache_misses += 1
-        self.total_input_tokens_saved += tokens_saved
-
-    def get_summary(self) -> dict:
-        """Get optimization summary."""
-        return {
-            "total_calls": self.total_calls,
-            "cache_hit_rate": self.cache_hits / max(self.total_calls, 1),
-            "total_tokens_saved": self.total_input_tokens_saved,
-            "estimated_cost_savings": self.total_input_tokens_saved * 0.00000075,
-        }
-
-
-# Global stats
-optimization_stats = OptimizationStats()
+            self.rate_limiter.close()

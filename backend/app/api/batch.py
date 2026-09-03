@@ -2,15 +2,16 @@
 Batch Invoice Upload API — Kafka Fan-Out + Claim Check Pattern
 
 Endpoints:
-- POST /invoices/batch: Upload PDF or CSV for batch processing
+- POST /invoices/batch: Upload PDF or image (JPEG/PNG) for batch processing
 - GET /invoices/batch/{batch_id}: Get batch status
 - GET /invoices/batch/{batch_id}/invoices: List invoices in batch
 
 Architecture:
-1. API saves individual pages to shared Docker volume (/app/data/batch_files/)
-2. API publishes one Kafka event per page (file path only, NOT bytes)
-3. API returns 202 ACCEPTED immediately (non-blocking)
-4. Workers consume events, run boundary detection + full pipeline
+1. Guardrail (MIME/Size + ONNX classification + anchor scan) runs pre-flight
+2. API saves individual pages to shared Docker volume (/app/data/batch_files/)
+3. API publishes one Kafka event per page (file path only, NOT bytes)
+4. API returns 202 ACCEPTED immediately (non-blocking)
+5. Workers consume events, run boundary detection + full pipeline
 
 RULE: No OCR in API thread — it's a blocking anti-pattern.
 All heavy processing is offloaded to Kafka workers.
@@ -18,9 +19,11 @@ All heavy processing is offloaded to Kafka workers.
 
 import json
 import logging
+import tempfile
 import time
 import uuid
 from pathlib import Path
+from uuid import UUID
 
 import cv2
 import fitz  # PyMuPDF
@@ -32,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.security import get_current_user_context
 from app.db.session import get_db
+from app.tools.guardrail import create_guardrail
 from app.schemas.batch import (
     BatchErrorResponse,
     BatchInvoiceItemResponse,
@@ -43,6 +47,26 @@ from app.schemas.batch import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/invoices/batch", tags=["batch"])
+
+
+# =============================================================================
+# Batch ID validation
+# =============================================================================
+
+
+def _validate_batch_id(batch_id: str) -> None:
+    """Return 404 for non-UUID batch IDs instead of a DB 500 error.
+
+    batch_jobs.batch_id is a UUID column; passing arbitrary strings (e.g.
+    a vendor code) would raise InvalidTextRepresentation from Postgres.
+    """
+    try:
+        UUID(batch_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch {batch_id} not found",
+        )
 
 
 # =============================================================================
@@ -162,7 +186,7 @@ def _save_single_image(
     },
 )
 async def upload_batch(
-    file: UploadFile = File(..., description="PDF or CSV file with invoices"),
+    file: UploadFile = File(..., description="PDF or image (JPEG/PNG) file with invoices"),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     user_context: dict = Depends(get_current_user_context),
@@ -170,10 +194,11 @@ async def upload_batch(
     """Upload a batch of invoices for async Kafka processing.
 
     This endpoint is FAST and NON-BLOCKING:
-    1. Validates file type and size
-    2. Saves individual pages to shared Docker volume
-    3. Publishes Kafka events (file paths only)
-    4. Returns 202 ACCEPTED immediately
+    1. Validates file type and size (CSV is rejected)
+    2. Runs the document guardrail (MIME/Size + ONNX classification + anchors)
+    3. Saves individual pages to shared Docker volume
+    4. Publishes Kafka events (file paths only)
+    5. Returns 202 ACCEPTED immediately
 
     No OCR, no boundary detection, no VLM calls in the API thread.
     """
@@ -186,13 +211,15 @@ async def upload_batch(
     filename = file.filename or "unknown"
     suffix = Path(filename).suffix.lower()
 
-    # Validate file type
-    if suffix not in [".pdf", ".csv"]:
+    # Validate file type (CSV support removed — PDF and images only)
+    if suffix not in settings.allowed_batch_extensions:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "error_code": "UNSUPPORTED_FILE_TYPE",
-                "message": f"File type '{suffix}' not supported. Use PDF or CSV.",
+                "message": f"File type '{suffix}' not supported. "
+                           f"Accepted types: {', '.join(settings.allowed_batch_extensions)}. "
+                           "CSV uploads are not supported.",
             },
         )
 
@@ -218,38 +245,54 @@ async def upload_batch(
             detail=f"Vendor '{vendor_code}' is not onboarded.",
         )
 
+    # --- Guardrail: pre-flight gate BEFORE the Fan-Out split ---
+    # Non-invoice documents fail fast here instead of consuming Kafka
+    # partitions and worker cycles.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    try:
+        guardrail = create_guardrail()
+        guardrail.run_guardrail(
+            tmp_path,
+            file_size,
+            file.content_type or "application/octet-stream",
+            max_size_mb=settings.max_batch_size_mb,
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
     # Create batch ID and determine source type
     batch_id = str(uuid.uuid4())
-    source_type = "pdf" if suffix == ".pdf" else "csv"
+    # NOTE: batch_jobs.source_type has a CHECK constraint allowing only
+    # 'pdf' | 'csv'. CSV support is removed, so image uploads are also
+    # recorded as 'pdf' (schema is immutable per Layer 1 constraints).
+    source_type = "pdf"
 
     # --- Step 1: Split and save pages (Claim Check) ---
-    if source_type == "pdf":
-        try:
+    try:
+        if suffix == ".pdf":
             pages = _split_pdf_to_pages(
                 pdf_bytes=content,
                 document_id=batch_id,
                 storage_path=settings.batch_storage_path,
             )
-        except Exception as e:
-            logger.error(f"PDF split failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "error_code": "PDF_SPLIT_FAILED",
-                    "message": f"Failed to split PDF: {e}",
-                },
+        else:
+            pages = _save_single_image(
+                image_bytes=content,
+                document_id=batch_id,
+                filename=filename,
+                storage_path=settings.batch_storage_path,
             )
-    else:
-        # CSV: no page splitting needed, save as-is
-        batch_dir = Path(settings.batch_storage_path) / batch_id
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = batch_dir / "data.csv"
-        csv_path.write_bytes(content)
-        pages = [{
-            "page_index": 0,
-            "file_path": str(csv_path),
-            "file_size": file_size,
-        }]
+    except Exception as e:
+        logger.error(f"Document split/save failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error_code": "DOCUMENT_SPLIT_FAILED",
+                "message": f"Failed to process document: {e}",
+            },
+        )
 
     total_invoices = len(pages)
 
@@ -310,7 +353,11 @@ async def upload_batch(
                     "event_id": event_id,
                     "aggregate_id": batch_id,
                     "topic": settings.raw_ingestion_topic,
-                    "partition_key": vendor_code,
+                    # Unique partition key per page event: identical keys hash
+                    # to the same Kafka partition, which would pin all 50
+                    # events to one worker. A unique key spreads events across
+                    # all partitions so the consumer group load-balances.
+                    "partition_key": f"{batch_id}:{page['page_index']}",
                     "payload": json.dumps(outbox_payload),
                 },
             )
@@ -364,6 +411,8 @@ async def get_batch_status(
 ):
     """Get the status of a batch processing job."""
 
+    _validate_batch_id(batch_id)
+
     result = db.execute(
         text("""
             SELECT batch_id, vendor_code, source_type, filename,
@@ -412,6 +461,8 @@ async def get_batch_invoices(
     user_context: dict = Depends(get_current_user_context),
 ):
     """List all invoices in a batch with their processing status."""
+
+    _validate_batch_id(batch_id)
 
     # Verify batch exists
     batch = db.execute(

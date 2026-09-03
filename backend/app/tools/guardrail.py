@@ -36,14 +36,19 @@ class DocumentGuardrail:
     def __init__(self):
         self.settings = get_settings()
 
-    def validate_mime_and_size(self, file_path: Path, file_size: int, content_type: str) -> None:
-        """Step 1: MIME & Size Gate - Instant rejection for invalid files."""
-        max_size_bytes = self.settings.max_upload_size_mb * 1024 * 1024
+    def validate_mime_and_size(self, file_path: Path, file_size: int, content_type: str, max_size_mb: Optional[int] = None) -> None:
+        """Step 1: MIME & Size Gate - Instant rejection for invalid files.
+
+        max_size_mb overrides the default single-upload limit so the batch
+        endpoint can enforce its own (larger) limit via the same guardrail.
+        """
+        size_mb = max_size_mb if max_size_mb is not None else self.settings.max_upload_size_mb
+        max_size_bytes = size_mb * 1024 * 1024
         if file_size > max_size_bytes:
             raise_guardrail_error(
                 Layer1ErrorCode.FILE_TOO_LARGE,
                 f'File size {file_size} bytes exceeds maximum {max_size_bytes} bytes',
-                {'file_size': file_size, 'max_size_mb': self.settings.max_upload_size_mb}
+                {'file_size': file_size, 'max_size_mb': size_mb}
             )
 
         actual_mime = magic.from_file(str(file_path), mime=True)
@@ -142,16 +147,20 @@ class DocumentGuardrail:
                 {'classification_error': str(e)}
             )
 
-    def run_guardrail(self, file_path: Path, file_size: int, content_type: str) -> tuple[str, float, bool]:
+    def run_guardrail(self, file_path: Path, file_size: int, content_type: str, max_size_mb: Optional[int] = None) -> tuple[str, float, bool]:
         """Run complete pre-flight guardrail.
 
         Returns (classification_label, classification_score, anchor_keywords_found).
         Raises Layer1Exception on failure.
+
+        Structural classification is COMPULSORY: if the DocRex ONNX model is
+        unavailable, the document is rejected with INVALID_DOCUMENT_CLASSIFICATION
+        (fail closed) — a missing model must never bypass the gate.
         """
         # Step 1: MIME & Size
-        self.validate_mime_and_size(file_path, file_size, content_type)
+        self.validate_mime_and_size(file_path, file_size, content_type, max_size_mb=max_size_mb)
 
-        # Step 2: DocRex Structural Classification
+        # Step 2: DocRex Structural Classification (COMPULSORY — fail closed)
         label, confidence = self.classify_document_structure(file_path)
 
         if label != 'invoice' or confidence < self.settings.classification_threshold:

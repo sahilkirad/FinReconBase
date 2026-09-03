@@ -13,85 +13,93 @@ Pipeline:
    b. Preprocess (Path A: binarized, Path B: RGB)
    c. OCR (Path A)
    d. Select model by quality (flash-lite vs flash)
-   e. VLM extraction (rate-limited)
+   e. VLM extraction (rate-limited via Redis token bucket)
    f. Checksum validation (LOCAL math, NEVER by Gemini)
-4. Publish to invoice.extracted.events
+4. Fan-In: publish to invoice.extracted.events for Layer 2
 5. Update batch_invoice_items in DB
 6. Cleanup page files
 
-Rate Limiting:
-- Asyncio Semaphore (3 concurrent per worker)
-- Redis Token Bucket (15 RPM shared across all workers)
+Rate Limiting (3-Pillar Architecture):
+- Threading Semaphore (layer1_max_concurrent per worker)
+- Redis Token Bucket (GEMINI_RPM_LIMIT shared across ALL workers)
 - Exponential Backoff with Full Jitter on 429 errors
+
+Poison Message Handling:
+- Terminal errors (duplicate invoice, tenant mismatch, missing file)
+  are published to reconciliation.dlq.events and the offset is committed
+  to prevent infinite redelivery loops.
 
 RULE: Gemini is NEVER used for mathematical validation.
 All financial math is performed by our local Python checksum layer.
 """
 
-import asyncio
 import json
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 
 import cv2
 import numpy as np
 from kafka import KafkaConsumer
-from kafka.errors import KafkaError
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
+from app.kafka.producer import publish_invoice_event
 
 logger = logging.getLogger(__name__)
 
+# Max batch entries held in the boundary-detection cache per worker.
+# Evicted FIFO beyond this to bound memory growth.
+MAX_BATCH_CACHE_SIZE = 25
+
 
 # =============================================================================
-# Rate Limiter (Thread-based for Kafka consumer)
+# Terminal Processing Error (Poison Message)
 # =============================================================================
 
 
-class VLMRateLimiter:
-    """Token bucket rate limiter for VLM API calls.
+class TerminalProcessingError(Exception):
+    """A message-level error that can never succeed on retry.
 
-    Thread-safe version for use with Kafka consumer (thread-based).
+    These are published to the DLQ and the offset is committed to
+    prevent infinite redelivery loops.
     """
 
-    def __init__(self, max_calls: int = 10, window_seconds: int = 60):
-        self.max_calls = max_calls
-        self.window_seconds = window_seconds
-        self.calls: list[float] = []
-        import threading
-        self._lock = threading.Lock()
-
-    def acquire(self):
-        """Wait until a rate limit slot is available."""
-        while True:
-            with self._lock:
-                now = time.time()
-                # Remove calls outside the window
-                self.calls = [t for t in self.calls if now - t < self.window_seconds]
-
-                if len(self.calls) < self.max_calls:
-                    self.calls.append(now)
-                    return
-
-                # Calculate wait time
-                oldest = self.calls[0]
-                wait_time = self.window_seconds - (now - oldest) + 0.1
-
-            logger.info(f"Rate limit reached, waiting {wait_time:.1f}s")
-            time.sleep(wait_time)
+    def __init__(self, error_type: str, message: str, details: dict | None = None):
+        super().__init__(message)
+        self.error_type = error_type
+        self.details = details or {}
 
 
-# Global rate limiter instance
-_rate_limiter = VLMRateLimiter(max_calls=10, window_seconds=60)
+# =============================================================================
+# Rate-Limited VLM Client (Redis token bucket driven by config)
+# =============================================================================
+
+_vlm_client = None
 
 
-def get_rate_limiter() -> VLMRateLimiter:
-    """Get the global VLM rate limiter."""
-    return _rate_limiter
+def get_vlm_client():
+    """Get the global rate-limited Gemini client.
+
+    Driven by environment config:
+        - layer1_max_concurrent -> per-worker semaphore
+        - gemini_rpm_limit      -> distributed Redis token bucket
+    """
+    global _vlm_client
+    if _vlm_client is None:
+        from app.tools.vlm_optimizer import RateLimitedGeminiClient
+
+        settings = get_settings()
+        _vlm_client = RateLimitedGeminiClient(
+            max_concurrent=settings.layer1_max_concurrent,
+            rpm=settings.gemini_rpm_limit,
+            redis_url=settings.redis_url,
+        )
+        _vlm_client.initialize()
+    return _vlm_client
 
 
 # =============================================================================
@@ -109,7 +117,8 @@ def _process_single_invoice(
     """Process a single invoice through the full Layer 1 pipeline.
 
     Args:
-        page_images: List of page images (BGR format)
+        page_images: List of all page images (BGR format) of the batch,
+                     indexed by page position
         batch_id: Batch job UUID
         vendor_code: Vendor code
         page_indices: Page indices belonging to this invoice
@@ -124,13 +133,13 @@ def _process_single_invoice(
     from app.tools.pii_masker import mask_invoice_for_llm
     from app.tools.preprocessing import preprocess_path_a_ocr, preprocess_path_b_vlm
     from app.tools.vlm_extractor import extract_invoice_json
-    from app.tools.vlm_optimizer import select_model, retry_with_backoff
+    from app.tools.vlm_optimizer import select_model
     from app.schemas.invoice import ExtractedInvoicePayload
 
     start_time = time.time()
 
     try:
-        # Use first page for processing
+        # Use first page of the group for processing
         first_page_idx = page_indices[0]
         page_img = page_images[first_page_idx]
 
@@ -167,16 +176,16 @@ def _process_single_invoice(
             },
         )
 
-        # Step 5: VLM extraction (with retry and rate limiting)
+        # Step 5: PII mask OCR text, then VLM extraction
+        # (rate-limited via Redis token bucket + semaphore + Full Jitter)
         raw_ocr_masked = mask_invoice_for_llm({"ocr_text": ocr_text})
 
-        extracted_json = retry_with_backoff(
-            lambda: extract_invoice_json(
-                ocr_text=raw_ocr_masked.get("ocr_text", ocr_text),
-                rgb_image=path_b,
-                send_image=True,
-                model_override=model,
-            )
+        extracted_json = get_vlm_client().call(
+            extract_invoice_json,
+            ocr_text=raw_ocr_masked.get("ocr_text", ocr_text),
+            rgb_image=path_b,
+            send_image=True,
+            model_override=model,
         )
 
         # Step 6: Checksum validation (LOCAL math, NEVER by Gemini)
@@ -348,6 +357,14 @@ def _complete_batch(db, batch_id: str):
     db.commit()
 
 
+def _cleanup_page_file(file_path: str):
+    """Delete a page file from the shared volume after processing."""
+    try:
+        Path(file_path).unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"Failed to cleanup file: {file_path}, error: {e}")
+
+
 # =============================================================================
 # Kafka Consumer
 # =============================================================================
@@ -358,9 +375,11 @@ class InvoiceConsumer:
 
     Features:
     - Claim Check pattern (reads from file paths)
-    - Boundary detection (groups pages into invoices)
-    - Rate limiting for VLM API calls
+    - Boundary detection (groups pages into invoices, cached per batch)
+    - Distributed Redis rate limiting for VLM API calls
     - Exponential backoff with Full Jitter
+    - Fan-In publish to invoice.extracted.events for Layer 2
+    - DLQ for poison messages (terminal errors commit the offset)
     - Manual offset commit after successful processing
     - Graceful shutdown
     """
@@ -371,6 +390,8 @@ class InvoiceConsumer:
         self.group_id = group_id or self.config.invoice_consumer_group
         self._stop_event = Event()
         self._consumer = None
+        # batch_id -> {"groups": [InvoiceGroup], "images": [np.ndarray]}
+        self._batch_cache: dict[str, dict] = {}
 
     def start(self):
         """Start consuming events."""
@@ -392,6 +413,7 @@ class InvoiceConsumer:
                 if self._stop_event.is_set():
                     break
 
+                event_data = None
                 try:
                     event_data = json.loads(message.value.decode("utf-8"))
                     event_type = event_data.get("type")
@@ -410,6 +432,19 @@ class InvoiceConsumer:
 
                     # Manual commit after successful processing
                     self._consumer.commit()
+
+                except TerminalProcessingError as e:
+                    # Poison message: publish to DLQ, record failure, commit
+                    # offset to prevent infinite redelivery.
+                    try:
+                        self._publish_to_dlq(event_data, e)
+                        self._mark_event_failed(event_data)
+                    except Exception as dlq_e:
+                        logger.error(
+                            f"DLQ handling failed for offset {message.offset}: {dlq_e}"
+                        )
+                    else:
+                        self._consumer.commit()
 
                 except Exception as e:
                     logger.error(
@@ -434,6 +469,7 @@ class InvoiceConsumer:
         from sqlalchemy import text
         from app.db.session import SessionLocal
 
+        # --- Tenant verification (event vendor vs DB vendor) ---
         db = SessionLocal()
         try:
             database_vendor_code = db.execute(
@@ -447,14 +483,19 @@ class InvoiceConsumer:
         finally:
             db.close()
 
-
         if database_vendor_code is None:
-            raise ValueError(f"Batch not found: {batch_id}")
+            raise TerminalProcessingError(
+                "batch_not_found",
+                f"Batch not found: {batch_id}",
+                {"batch_id": batch_id, "page_index": page_index},
+            )
 
         if event_vendor_code != database_vendor_code:
-            raise ValueError(
+            raise TerminalProcessingError(
+                "tenant_mismatch",
                 f"Tenant mismatch for batch {batch_id}: "
-                f"event={event_vendor_code}, database={database_vendor_code}"
+                f"event={event_vendor_code}, database={database_vendor_code}",
+                {"batch_id": batch_id, "page_index": page_index},
             )
 
         vendor_code = database_vendor_code
@@ -464,52 +505,116 @@ class InvoiceConsumer:
             extra={"batch_id": batch_id, "page_index": page_index, "file_path": file_path},
         )
 
-        # Read image from Claim Check path
+        # --- Claim Check: verify the page file exists ---
         if not file_path or not Path(file_path).exists():
-            logger.error(f"File not found: {file_path}")
-            return
+            raise TerminalProcessingError(
+                "file_not_found",
+                f"File not found: {file_path}",
+                {"batch_id": batch_id, "page_index": page_index, "file_path": file_path},
+            )
 
-        image = cv2.imread(file_path)
-        if image is None:
-            logger.error(f"Failed to read image: {file_path}")
-            return
+        if cv2.imread(file_path) is None:
+            raise TerminalProcessingError(
+                "image_decode_failed",
+                f"Failed to read image: {file_path}",
+                {"batch_id": batch_id, "page_index": page_index, "file_path": file_path},
+            )
 
-        # Process single page as a single invoice
-        # (boundary detection happens at batch level, not per-page)
-        result = _process_single_invoice(
-            page_images=[image],
-            batch_id=batch_id,
-            vendor_code=vendor_code,
-            page_indices=[0],
-            invoice_number=None,
+        # --- Boundary detection: group pages of the same invoice ---
+        batch_pages = self._get_batch_pages(batch_id)
+        groups = batch_pages["groups"]
+        group = next(
+            (g for g in groups if page_index in g.page_indices),
+            None,
         )
 
-        # Insert to DB
-        from app.db.session import SessionLocal
+        if group is None or page_index != group.page_indices[0]:
+            # Continuation page of a multi-page invoice: extraction is owned
+            # by the first page's event. Mark progress and clean up.
+            logger.info(
+                "Page is continuation of a grouped invoice; skipping extraction",
+                extra={"batch_id": batch_id, "page_index": page_index},
+            )
+            db = SessionLocal()
+            try:
+                is_complete = _update_batch_progress(db, batch_id, success=True)
+                if is_complete:
+                    _complete_batch(db, batch_id)
+                    self._evict_batch_cache(batch_id)
+                    logger.info(f"Batch {batch_id} completed!")
+            finally:
+                db.close()
+            _cleanup_page_file(file_path)
+            return
+
+        # --- Process the invoice group (owned by its first page event) ---
+        result = _process_single_invoice(
+            page_images=batch_pages["images"],
+            batch_id=batch_id,
+            vendor_code=vendor_code,
+            page_indices=group.page_indices,
+            invoice_number=group.invoice_number,
+        )
+
         db = SessionLocal()
         try:
             if result["status"] != "FAILED":
-                _insert_extracted_invoice(db, batch_id, vendor_code, result, page_index)
+                try:
+                    document_id = _insert_extracted_invoice(
+                        db, batch_id, vendor_code, result, page_index
+                    )
+                except IntegrityError as e:
+                    if "unique" in str(e).lower():
+                        raise TerminalProcessingError(
+                            "duplicate_invoice",
+                            f"Duplicate invoice for batch {batch_id} "
+                            f"(page {page_index}): {e}",
+                            {
+                                "batch_id": batch_id,
+                                "page_index": page_index,
+                                "file_path": file_path,
+                            },
+                        ) from e
+                    raise
+
+                # Fan-In: publish the extracted JSON payload to
+                # invoice.extracted.events for Layer 2 (LangGraph).
+                try:
+                    publish_invoice_event(
+                        document_id=document_id,
+                        vendor_code=vendor_code,
+                        invoice_number=result.get("invoice_number"),
+                        processing_status=result["status"],
+                        extracted_json=result.get("extracted_json"),
+                        batch_id=batch_id,
+                    )
+                except Exception as pub_e:
+                    logger.error(
+                        f"Fan-in publish failed for document {document_id}: {pub_e}"
+                    )
+
                 is_complete = _update_batch_progress(db, batch_id, success=True)
             else:
                 is_complete = _update_batch_progress(db, batch_id, success=False)
                 logger.warning(
                     "Page processing failed",
-                    extra={"batch_id": batch_id, "page_index": page_index, "error": result.get("error")},
+                    extra={
+                        "batch_id": batch_id,
+                        "page_index": page_index,
+                        "error": result.get("error"),
+                    },
                 )
 
             # If this worker completed the batch, mark it done
             if is_complete:
                 _complete_batch(db, batch_id)
+                self._evict_batch_cache(batch_id)
                 logger.info(f"Batch {batch_id} completed!")
         finally:
             db.close()
 
         # Cleanup page file
-        try:
-            Path(file_path).unlink(missing_ok=True)
-        except Exception as e:
-            logger.warning(f"Failed to cleanup file: {file_path}, error: {e}")
+        _cleanup_page_file(file_path)
 
     def _handle_batch_event(self, event_data: dict):
         """Handle batch processing started event."""
@@ -517,6 +622,151 @@ class InvoiceConsumer:
         batch_id = data.get("batch_id")
         logger.info(f"Batch processing started: {batch_id}")
         # Batch processing logic is handled by page events
+
+    # --- Boundary detection helpers (cached per batch) ---
+
+    def _get_batch_pages(self, batch_id: str) -> dict:
+        """Load all page images of a batch and detect invoice boundaries.
+
+        Result is cached per batch: boundary detection (lightweight OCR
+        over every page) runs once, subsequent page events reuse the
+        grouping. All page files exist before any event is published
+        (single atomic TX at upload time), so the cache is never stale.
+
+        Returns:
+            {"groups": [InvoiceGroup], "images": [np.ndarray]}
+        """
+        if batch_id in self._batch_cache:
+            return self._batch_cache[batch_id]
+
+        settings = get_settings()
+        batch_dir = Path(settings.batch_storage_path) / batch_id
+
+        if not batch_dir.exists():
+            raise TerminalProcessingError(
+                "batch_pages_missing",
+                f"Batch directory not found: {batch_dir}",
+                {"batch_id": batch_id},
+            )
+
+        page_files = sorted(
+            batch_dir.glob("page_*.jpg"),
+            key=lambda p: int(p.stem.split("_")[1]),
+        )
+
+        images = []
+        for pf in page_files:
+            img = cv2.imread(str(pf))
+            if img is None:
+                logger.warning(
+                    f"Failed to load page image for boundary detection: {pf}"
+                )
+                continue
+            images.append(img)
+
+        if not images:
+            raise TerminalProcessingError(
+                "no_pages_found",
+                f"No readable page images for batch {batch_id}",
+                {"batch_id": batch_id},
+            )
+
+        from app.tools.boundary_detector import detect_boundaries
+        groups = detect_boundaries(images)
+
+        entry = {"groups": groups, "images": images}
+        self._batch_cache[batch_id] = entry
+
+        # Bound cache growth: evict oldest batch FIFO
+        if len(self._batch_cache) > MAX_BATCH_CACHE_SIZE:
+            oldest_batch_id = next(iter(self._batch_cache))
+            self._batch_cache.pop(oldest_batch_id, None)
+            logger.info(
+                "Boundary cache evicted oldest batch",
+                extra={"batch_id": oldest_batch_id},
+            )
+
+        return entry
+
+    def _evict_batch_cache(self, batch_id: str):
+        """Drop cached pages/groups once a batch completes."""
+        self._batch_cache.pop(batch_id, None)
+
+    # --- DLQ (poison message) handling ---
+
+    def _publish_to_dlq(self, event_data: dict | None, error: TerminalProcessingError):
+        """Publish a poison message to reconciliation.dlq.events.
+
+        Payload carries metadata tags (source, error_type) so the
+        Exception Dashboard can filter by origin.
+        """
+        from app.kafka.producer import get_producer
+
+        event_data = event_data or {}
+        data = event_data.get("data", {})
+        dlq_event_id = f"dlq_{uuid.uuid4()}"
+
+        dlq_payload = {
+            "specversion": "1.0",
+            "type": "invoice.processing.dlq",
+            "source": "layer1_extractor",
+            "id": dlq_event_id,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "data": {
+                "original_event": event_data,
+                "error_type": error.error_type,
+                "error": str(error),
+                "details": error.details,
+                "batch_id": data.get("batch_id"),
+                "page_index": data.get("page_index"),
+            },
+            "metadata": {
+                "source": "layer1_extractor",
+                "error": error.error_type,
+            },
+        }
+
+        producer = get_producer()
+        future = producer.send(
+            topic=self.config.reconciliation_dlq_topic,
+            key=error.error_type.encode("utf-8"),
+            value=json.dumps(dlq_payload).encode("utf-8"),
+        )
+        future.get(timeout=10)
+
+        logger.error(
+            "Poison message published to DLQ",
+            extra={
+                "dlq_event_id": dlq_event_id,
+                "topic": self.config.reconciliation_dlq_topic,
+                "error_type": error.error_type,
+                "batch_id": data.get("batch_id"),
+                "page_index": data.get("page_index"),
+            },
+        )
+
+    def _mark_event_failed(self, event_data: dict | None):
+        """Record a DLQ'd event as a batch failure.
+
+        Ensures batch_jobs progress reaches total_invoices even when
+        a page event is terminal, so the batch does not stay PENDING.
+        """
+        data = (event_data or {}).get("data", {})
+        batch_id = data.get("batch_id")
+        if not batch_id:
+            return
+
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            is_complete = _update_batch_progress(db, batch_id, success=False)
+            if is_complete:
+                _complete_batch(db, batch_id)
+                self._evict_batch_cache(batch_id)
+                logger.info(f"Batch {batch_id} completed (after DLQ failure).")
+        finally:
+            db.close()
 
     def stop(self):
         """Stop the consumer."""
@@ -529,4 +779,4 @@ class InvoiceConsumer:
 def start_consumer():
     """Entry point for starting the consumer."""
     consumer = InvoiceConsumer()
-    consumer.start()
+    consumer.start()

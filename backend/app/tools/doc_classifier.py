@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 # Model paths (downloaded at build time or mounted via volume)
 MODEL_DIR = Path(__file__).parent.parent.parent / "models"
 MODEL_PATH = MODEL_DIR / "invoice_classifier_fp32.onnx"
+# invoice_classifier_fp32.onnx uses external-data serialization: the model
+# cannot load without its sibling .data file next to it.
+MODEL_DATA_PATH = MODEL_DIR / "invoice_classifier_fp32.onnx.data"
 LABELS_PATH = MODEL_DIR / "labels.json"
 
 # ImageNet normalization constants
@@ -53,6 +56,14 @@ class DocClassifier:
                 f"DocRex ONNX model not found at {MODEL_PATH}. "
                 f"Download from: https://huggingface.co/vivekkaushal/DocRex "
                 f"and place invoice_classifier_fp32.onnx in {MODEL_DIR}/"
+            )
+
+        if not MODEL_DATA_PATH.exists():
+            raise FileNotFoundError(
+                f"DocRex ONNX external data file not found at {MODEL_DATA_PATH}. "
+                f"invoice_classifier_fp32.onnx uses external-data serialization and "
+                f"cannot load without its sibling .data file. Download both from "
+                f"https://huggingface.co/vivekkaushal/DocRex and place them in {MODEL_DIR}/"
             )
 
         if not LABELS_PATH.exists():

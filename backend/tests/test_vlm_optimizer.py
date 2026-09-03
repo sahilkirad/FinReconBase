@@ -17,6 +17,7 @@ from app.tools.vlm_optimizer import (
     TokenBucketRateLimiter,
     retry_with_backoff,
     _extract_retry_after,
+    RateLimitedGeminiClient,
 )
 
 
@@ -233,3 +234,67 @@ class TestExtractRetryAfter:
         error_str = "429 Rate limit exceeded"
         result = _extract_retry_after(error_str)
         assert result is None
+
+
+class TestRateLimitedGeminiClient:
+    """Test the synchronous rate-limited Gemini client.
+
+    Redis is not available in unit tests: the client is pointed at the
+    in-memory fallback limiter (rate_limiter = None) exactly as it would
+    be after initialize() fails to reach Redis.
+    """
+
+    def _make_client(self, max_retries: int = 3):
+        client = RateLimitedGeminiClient(
+            max_concurrent=2,
+            rpm=15,
+            max_retries=max_retries,
+            base_delay=0.01,
+        )
+        client.rate_limiter = None  # Use in-memory fallback
+        return client
+
+    def test_call_success_on_first_try(self):
+        """Should return result on first successful call."""
+        client = self._make_client()
+        func = MagicMock(return_value={"ok": True})
+
+        result = client.call(func)
+
+        assert result == {"ok": True}
+        assert func.call_count == 1
+
+    def test_call_retries_on_rate_limit_error(self):
+        """Should retry on 429 rate limit error."""
+        client = self._make_client(max_retries=3)
+        func = MagicMock(side_effect=[
+            Exception("429 rate limit exceeded"),
+            "success",
+        ])
+
+        with patch('app.tools.vlm_optimizer.time.sleep'):
+            result = client.call(func)
+
+        assert result == "success"
+        assert func.call_count == 2
+
+    def test_call_raises_on_non_retryable_error(self):
+        """Should raise immediately on non-rate-limit error."""
+        client = self._make_client()
+        func = MagicMock(side_effect=ValueError("Invalid input"))
+
+        with pytest.raises(ValueError):
+            client.call(func)
+
+        assert func.call_count == 1
+
+    def test_call_raises_after_max_retries(self):
+        """Should raise RuntimeError after max retries exhausted."""
+        client = self._make_client(max_retries=2)
+        func = MagicMock(side_effect=Exception("429 rate limit"))
+
+        with patch('app.tools.vlm_optimizer.time.sleep'):
+            with pytest.raises(RuntimeError):
+                client.call(func)
+
+        assert func.call_count == 2
