@@ -10,18 +10,26 @@ Per sealed batch, ONE isolated sub-graph per invoice (Map phase):
 
     thread_id      = "{batch_id}::{document_id}"
     checkpoint_ns  = "reconciliation::{batch_id}"
-    recursion_limit = 12  (bounded — an infinite ReAct loop force-halts)
+    recursion_limit = 16  (bounded — an infinite ReAct loop force-halts)
 
-Graph shape:
+Graph shape (Deterministic First, AI Second):
 
     START -> pre_check  --already reconciled--> END (token saver)
                 |
                 v
             context_node   (deterministic context seed: TDS net + razorpay
-                            anchor + masked invoice -> opening HumanMessage)
+                            anchor + masked invoice -> SystemMessage +
+                            opening HumanMessage)
                 |
                 v
-            agent          (Groq Llama 3.3 70B, .bind_tools(5 M1 tools))
+            deterministic  (FAST PATH: strict 3-phase subset-sum waterfall +
+                            ledger commit. Clean SUBSET_MATCHED proof ->
+                            Command(goto="__end__") hard short-circuit — the
+                            Groq LLM is never woken for resolvable invoices)
+              |  (plain return: NO_MATCH / AMBIGUOUS_COLLISION / membership
+              |   miss — outcome recorded in state + conversation note)
+                v
+            agent          (Groq ReAct model, .bind_tools(5 M1 tools))
               |  ^
               v  |          tools_condition: has tool_calls -> tools
             tools          (langgraph.prebuilt.ToolNode -> react_tools.py)
@@ -90,6 +98,72 @@ def route_after_tools(state: dict) -> str:
     return "agent"
 
 
+def route_after_deterministic(state: dict) -> str:
+    """Plain (non-Command) returns from the deterministic fast-path: a
+    terminal (safety net) -> hard END; otherwise hand the unresolved invoice
+    to the ReAct agent. Command(goto="__end__") returns never reach here."""
+    if is_terminal_status(state.get("terminal_status")):
+        return "END"
+    return "agent"
+
+
+# =============================================================================
+# Deterministic fast-path pure helpers (deterministic-first / AI-second)
+# =============================================================================
+
+
+def fast_path_target_paise(state: dict) -> int | None:
+    """Net target the deterministic subset engine must reconcile for this
+    invoice: the razorpay-anchored payout amount wins, else the verified
+    TDS-waterfall net. Mirrors the deterministic fallback agent's choice."""
+    anchor = state.get("razorpay_amount_paise")
+    if anchor:
+        return int(anchor)
+    net = state.get("net_expected_paise")
+    if net is not None:
+        return int(net)
+    return None
+
+
+def can_fast_path_commit(
+    result_status: str, matched_invoice_ids: list, invoice_number: str
+) -> bool:
+    """A waterfall proof may be committed deterministically ONLY when it names
+    THIS invoice (membership guard — never commit a sibling's match)."""
+    return (
+        result_status == "SUBSET_MATCHED"
+        and invoice_number in (matched_invoice_ids or [])
+    )
+
+
+def fast_path_outcome_text(state: dict, status: str, message: str) -> str:
+    """Conversation note appended when the deterministic fast-path hands an
+    unresolved invoice to the ReAct agent, so the LLM never blindly re-runs
+    the subset engine."""
+    invoice = state.get("invoice_number") or "?"
+    utr = state.get("razorpay_utr") or state.get("fuzzy_resolved_utr")
+    net = fast_path_target_paise(state)
+    lines = [
+        f"Deterministic pre-node outcome for {invoice}: "
+        f"run_subset_sum_matching_tool returned {status}.",
+    ]
+    if message:
+        lines.append(f"Engine message: {message[:300]}")
+    if utr:
+        lines.append(f"UTR attempted by the pre-node: {utr}.")
+    if net is not None:
+        whole, rem = divmod(int(net), 100)
+        lines.append(f"Deterministic net target used: Rs.{whole}.{rem:02d}.")
+    lines.append(
+        "Do NOT call run_subset_sum_matching_tool again unless "
+        "run_fuzzy_text_linker_tool resolves a NEW bank UTR for this invoice. "
+        "Call run_fuzzy_text_linker_tool first; on ENTITY_MISMATCH call "
+        "route_to_human_exception_tool; on ENTITY_RESOLVED re-run the subset "
+        "tool with the resolved UTR, then post_ledger_entry_tool."
+    )
+    return "\n".join(lines)
+
+
 # =============================================================================
 # Groq ReAct model proxy (rate-limited at the real network boundary)
 # =============================================================================
@@ -140,13 +214,20 @@ def _build_react_graph(supervisor_model: Any | None, checkpointer: Any | None = 
 
     graph.add_node("pre_check", nodes.pre_check)
     graph.add_node("context", nodes.context_node)
+    graph.add_node("deterministic", deterministic_fast_path)
     graph.add_node("agent", agent_impl)
     graph.add_node("tools", ToolNode(build_react_tools()))
     graph.add_node("finalize", _finalize_node)
 
     graph.add_edge(START, "pre_check")
     graph.add_conditional_edges("pre_check", route_after_precheck, {"END": END, "context": "context"})
-    graph.add_edge("context", "agent")
+    graph.add_edge("context", "deterministic")
+    # Deterministic fast-path: Command(goto="__end__") hard short-circuits
+    # committed invoices (LLM never woken); plain returns (NO_MATCH / collision)
+    # flow to the ReAct agent via route_after_deterministic.
+    graph.add_conditional_edges(
+        "deterministic", route_after_deterministic, {"END": END, "agent": "agent"}
+    )
     # Standard ReAct routing: tool calls -> tools; otherwise -> finalize.
     graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": "finalize"})
     graph.add_conditional_edges("tools", route_after_tools, {"END": END, "agent": "agent"})
@@ -200,7 +281,8 @@ def get_or_create_thread_saver() -> Any:
 # Runtime config + invocation (Map leaf)
 # =============================================================================
 
-_RECURSION_LIMIT = 12  # bounded ReAct loop; hard END after exception routing
+_RECURSION_LIMIT = 16  # bounded ReAct loop; +1 for the deterministic
+# fast-path prefix node; hard END after exception routing
 
 
 def make_thread_config(batch_id: str, document_id: str, *, run_token: str | None = None) -> dict:
@@ -223,6 +305,122 @@ def invoke_invoice(graph: Any, *, state: dict, config: dict) -> dict:
     if isinstance(result, dict):
         return result
     return {}
+
+
+# =============================================================================
+# Deterministic fast-path node (deterministic-first / AI-second)
+# =============================================================================
+
+
+def _subset_for_state(state: dict):
+    """Run the strict 3-phase subset engine for THIS invoice (own DB session).
+    Target = razorpay-anchored payout amount, else the verified waterfall net;
+    UTR restricted to the context-seeded razorpay anchor."""
+    from app.db.session import SessionLocal
+    from app.agent.tools.subset_sum import run_subset_sum_matching
+    from app.schemas.layer2_tools import SubsetSumInput
+
+    target = fast_path_target_paise(state)
+    inp = SubsetSumInput(
+        vendor_code=state["vendor_code"],
+        target_amount_paise=int(target or 0),
+        bank_utr_number=state.get("razorpay_utr") or None,
+        date_tolerance_days=7,
+    )
+    db = SessionLocal()
+    try:
+        return run_subset_sum_matching(inp, db)
+    finally:
+        db.close()
+
+
+def _commit_proof_for_state(state: dict, proof):
+    """Deterministic ledger commit of a SUBSET_MATCHED proof (own DB session)."""
+    from app.db.session import SessionLocal
+    from app.agent.tools.ledger_entry import post_ledger_entry
+    from app.agent.tools.react_tools import _to_rupees
+    from app.schemas.layer2_tools import PostLedgerInput
+
+    inp = PostLedgerInput(
+        vendor_code=state["vendor_code"],
+        matched_invoice_ids=list(proof.matched_invoice_ids or []),
+        razorpay_payout_id=state.get("razorpay_payout_id"),
+        bank_utr_number=proof.matched_bank_utr or "",
+        total_reconciled_amount=_to_rupees(int(proof.net_total_paise or 0)),
+    )
+    db = SessionLocal()
+    try:
+        return post_ledger_entry(db, inp=inp, proof=proof, batch_id=state.get("batch_id"))
+    finally:
+        db.close()
+
+
+def deterministic_fast_path(state: dict) -> dict:
+    """Pre-LLM deterministic waterfall (the ~90% fast path).
+
+    On a clean SUBSET_MATCHED proof naming this invoice it commits the ledger
+    immediately and hard short-circuits to END via Command(goto="__end__") —
+    the Groq LLM is never woken (state saved, transaction logged, execution
+    terminates). On NO_MATCH / AMBIGUOUS_COLLISION (or a membership miss) it
+    records the deterministic outcome in state AND appends a conversation
+    note, then flows to the ReAct agent for exception resolution.
+
+    Guarded by idempotency end-to-end: if the commit raced another sub-graph
+    the kernel returns DUPLICATE_EVENT -> ALREADY_COMMITTED terminal, and a
+    crash mid-node replays to the same result (UNIQUE(document_id)).
+    """
+    from langchain_core.messages import HumanMessage
+    from langgraph.types import Command
+
+    from app.schemas.layer2_tools import SubsetSumStatus
+
+    result = _subset_for_state(state)
+    status = result.status.value
+    matched = list(result.matched_invoice_ids or [])
+
+    if can_fast_path_commit(status, matched, state.get("invoice_number")):
+        committed = _commit_proof_for_state(state, result)
+        terminal = (
+            "LEDGER_COMMITTED"
+            if committed.status.value == "LEDGER_COMMITTED"
+            else "ALREADY_COMMITTED"
+        )
+        return Command(
+            update={
+                "subset_status": status,
+                "subset_message": result.message,
+                "matched_invoice_ids": matched,
+                "matched_bank_utr": result.matched_bank_utr,
+                "bank_transaction_date": result.bank_transaction_date,
+                "phase_applied": result.phase_applied,
+                "subset_net_total_paise": result.net_total_paise,
+                "terminal_status": terminal,
+                "terminal_detail": committed.message,
+                "terminal_utr": result.matched_bank_utr,
+                "terminal_payout_id": state.get("razorpay_payout_id"),
+                "outbox_event_id": (committed.outbox_event_ids or [None])[0],
+            },
+            goto="__end__",
+        )
+
+    # Membership miss (waterfall resolved to other invoices) reads as NO_MATCH
+    # for THIS invoice — the sub-graph must never commit a sibling's match.
+    handoff_status = status
+    handoff_message = result.message
+    if status == SubsetSumStatus.SUBSET_MATCHED.value:
+        handoff_status = SubsetSumStatus.NO_MATCH.value
+        handoff_message = (
+            "Collision resolved to other open invoice(s); this invoice is not "
+            "part of the matched subset."
+        )
+    updates: dict = {
+        "subset_status": handoff_status,
+        "subset_message": handoff_message,
+    }
+    updates["messages"] = [
+        HumanMessage(content=fast_path_outcome_text(state, handoff_status, handoff_message))
+    ]
+    return updates
 
 
 # =============================================================================
@@ -254,62 +452,33 @@ def _invoke_agent(model: Any, state: dict) -> dict:
 
 def _deterministic_agent(state: dict) -> dict:
     """LLM-free fallback: executes the waterfall deterministically in ONE node
-    so the pipeline never blocks when Groq is unreachable at startup.
+    so the pipeline never blocks when Groq is unreachable at startup, and acts
+    as the finalize safety net (never a silent drop).
 
     Mirrors exactly what the ReAct loop would do with a model:
         subset (anchored) -> membership guard -> ledger | human exception.
     """
-    from sqlalchemy import text
-
-    from app.db.session import SessionLocal
-    from app.schemas.layer2_tools import HumanExceptionInput, SubsetSumInput, SubsetSumStatus
-    from app.agent.tools.human_exception import route_to_human_exception
-    from app.agent.tools.ledger_entry import post_ledger_entry
-    from app.agent.tools.subset_sum import run_subset_sum_matching
-    from app.agent.tools.react_tools import derive_exception_reason
-
-    target = state.get("net_expected_paise")
-    if state.get("razorpay_amount_paise"):
-        target = int(state["razorpay_amount_paise"])
-    bank_utr = state.get("razorpay_utr") or None
-
-    inp = SubsetSumInput(
-        vendor_code=state["vendor_code"],
-        target_amount_paise=int(target or 0),
-        bank_utr_number=bank_utr,
-        date_tolerance_days=7,
-    )
-    db = SessionLocal()
-    try:
-        result = run_subset_sum_matching(inp, db)
-    finally:
-        db.close()
-
-    updates: dict = {"messages": []}
     from langchain_core.messages import AIMessage
 
-    if result.status.value == SubsetSumStatus.SUBSET_MATCHED.value and state.get("invoice_number") in (result.matched_invoice_ids or []):
-        proof = result
-        from app.schemas.layer2_tools import PostLedgerInput
-        from app.agent.tools.react_tools import _to_rupees
+    from app.db.session import SessionLocal
+    from app.agent.tools.human_exception import route_to_human_exception
+    from app.agent.tools.react_tools import derive_exception_reason
+    from app.schemas.layer2_tools import HumanExceptionInput
 
-        ledger_inp = PostLedgerInput(
-            vendor_code=state["vendor_code"],
-            matched_invoice_ids=list(proof.matched_invoice_ids or []),
-            razorpay_payout_id=state.get("razorpay_payout_id"),
-            bank_utr_number=proof.matched_bank_utr or "",
-            total_reconciled_amount=_to_rupees(int(proof.net_total_paise or 0)),
-        )
-        db = SessionLocal()
-        try:
-            committed = post_ledger_entry(db, inp=ledger_inp, proof=proof, batch_id=state.get("batch_id"))
-        finally:
-            db.close()
+    result = _subset_for_state(state)
+    updates: dict = {"messages": []}
+
+    if can_fast_path_commit(
+        result.status.value,
+        list(result.matched_invoice_ids or []),
+        state.get("invoice_number"),
+    ):
+        committed = _commit_proof_for_state(state, result)
         if committed.status.value == "LEDGER_COMMITTED":
             updates.update({
                 "terminal_status": "LEDGER_COMMITTED",
                 "terminal_detail": committed.message,
-                "terminal_utr": proof.matched_bank_utr,
+                "terminal_utr": result.matched_bank_utr,
                 "terminal_payout_id": state.get("razorpay_payout_id"),
                 "outbox_event_id": (committed.outbox_event_ids or [None])[0],
             })
@@ -329,7 +498,7 @@ def _deterministic_agent(state: dict) -> dict:
             inp=HumanExceptionInput(
                 vendor_code=state["vendor_code"],
                 flagged_invoice_ids=[state["invoice_number"]],
-                bank_utr_number=bank_utr,
+                bank_utr_number=state.get("razorpay_utr") or None,
                 exception_reason=derive_exception_reason(state),
                 human_readable_message=(
                     (result.message or "")[:500]
@@ -342,7 +511,7 @@ def _deterministic_agent(state: dict) -> dict:
     updates.update({
         "terminal_status": "EXCEPTION_ROUTED",
         "terminal_detail": exc.action_required,
-        "terminal_utr": bank_utr,
+        "terminal_utr": state.get("razorpay_utr") or None,
         "outbox_event_id": exc.outbox_event_id,
     })
     updates["messages"].append(AIMessage(content=f"Deterministic fallback: {exc.exception_reason} routed to DLQ."))

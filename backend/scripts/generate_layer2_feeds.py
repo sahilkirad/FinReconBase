@@ -133,8 +133,20 @@ def _bank_date(inv: dict) -> date:
     return base + timedelta(days=2)
 
 
-def build_feeds(invoices: list[dict], anomalies: int) -> tuple[list[dict], list[dict]]:
+def build_feeds(
+    invoices: list[dict],
+    anomalies: int,
+    scenario: str = "clean",
+) -> tuple[list[dict], list[dict]]:
     """Return (razorpay_payloads, bank_payloads)."""
+    if scenario not in {"clean", "agent-fallback"}:
+        raise ValueError(
+            f"Unsupported scenario '{scenario}'. "
+            "Use 'clean' or 'agent-fallback'."
+        )
+
+    if scenario == "agent-fallback" and anomalies == 0:
+        anomalies = 5
     usable = invoices[: len(invoices) - anomalies] if anomalies else invoices
 
     razorpay: list[dict] = []
@@ -211,6 +223,12 @@ def main() -> int:
     parser.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN (host port 5457)")
     parser.add_argument("--out-dir", default=".", help="Directory for the generated JSON files")
     parser.add_argument("--anomalies", type=int, default=0, help="Drop last N invoices from BOTH feeds to demo the DLQ path")
+    parser.add_argument(
+    "--scenario",
+    choices=["clean", "agent-fallback"],
+    default="clean",
+    help="Layer 2 test scenario",
+)
     parser.add_argument("--push", action="store_true", help="POST the feeds to the live API after generating")
     parser.add_argument("--token", default=None, help="JWT bearer token (required with --push)")
     parser.add_argument("--base-url", default="http://localhost:8000", help="API base URL (with --push)")
@@ -249,7 +267,11 @@ def main() -> int:
         )
         return 1
 
-    razorpay, bank = build_feeds(invoices, args.anomalies)
+    razorpay, bank = build_feeds(
+    invoices,
+    args.anomalies,
+    args.scenario,
+)
 
     rp_path = out_dir / "razorpay_webhooks.json"
     bk_path = out_dir / "bank_transactions.json"
@@ -264,9 +286,12 @@ def main() -> int:
     print(f"  -> {rp_path}")
     print(f"  -> {bk_path}")
     print("Expected outcome:")
-    print(f"  - matched (LEDGER_COMMITTED)      : {len(invoices) - args.anomalies}")
-    if args.anomalies:
-        print(f"  - exceptions (reconciliation.dlq) : {args.anomalies} (NO_MATCH path)")
+    if args.scenario == "agent-fallback":
+        print(f"  - deterministic matches            : {len(invoices) - args.anomalies}")
+        print(f"  - forwarded to Groq agent         : {args.anomalies}")
+        print(f"  - unresolved cases may reach DLQ  : {args.anomalies}")
+    else:
+        print(f"  - deterministic matches            : {len(invoices)}")
     print("=" * 72)
     print("Next:")
     print("  1. POST /ingestion/bank with the full bank_transactions.json body (single call)")

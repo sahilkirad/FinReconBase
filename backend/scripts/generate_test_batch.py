@@ -203,9 +203,14 @@ def generate_invoice_page(invoice_data: dict) -> str:
     """
 
 
-def generate_test_pdf(output_path: str = "test_batch_50.pdf", num_invoices: int = 50):
+def generate_test_pdf(
+    output_path: str = "test_batch_50.pdf",
+    num_invoices: int = 50,
+    seed: int | None = None,
+):
     """Generate a multi-page PDF with test invoices."""
-    
+    if seed is not None:
+        random.seed(seed)
     # Try to use reportlab (preferred)
     try:
         from reportlab.lib.pagesizes import A4
@@ -316,4 +321,5 @@ def generate_test_pdf(output_path: str = "test_batch_50.pdf", num_invoices: int 
 if __name__ == "__main__":
     output = sys.argv[1] if len(sys.argv) > 1 else "test_batch_50.pdf"
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 50
-    generate_test_pdf(output, count)
+    seed = int(sys.argv[3]) if len(sys.argv) > 3 else None
+    generate_test_pdf(output, count, seed)
