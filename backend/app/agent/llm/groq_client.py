@@ -36,10 +36,7 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Retry-After extraction is implemented locally (NOT via the L1 helper, whose
-# raw-string regex cannot match a real header). Matches HTTP header semantics:
-#   Retry-After: 120      (seconds)
-#   Retry-After: 1.5      (fractional seconds, tolerated)
+# Local Retry-After parser (seconds, fractional tolerated) — L1 helper regex can't match raw headers.
 _RETRY_AFTER_RE = re.compile(r"retry[- ]after\s*:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 

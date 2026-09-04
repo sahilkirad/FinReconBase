@@ -28,7 +28,7 @@ from uuid import UUID
 import cv2
 import fitz  # PyMuPDF
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -262,6 +262,11 @@ async def upload_batch(
     finally:
         tmp_path.unlink(missing_ok=True)
 
+    logger.info(
+        "BATCH_GUARDRAIL_PASSED",
+        extra={"vendor_code": vendor_code, "filename": filename, "suffix": suffix, "file_size": file_size},
+    )
+
     # Create batch ID and determine source type
     batch_id = str(uuid.uuid4())
     # NOTE: batch_jobs.source_type has a CHECK constraint allowing only
@@ -296,11 +301,8 @@ async def upload_batch(
 
     total_invoices = len(pages)
 
-    # --- Step 2: Atomic Transaction — batch_jobs + outbox_events ---
-    # Outbox Pattern: Write to DB first, then publish to Kafka.
-    # This guarantees exactly-once delivery semantics.
-    # Note: get_db() yields a session with autocommit=False,
-    # so a transaction is already active. No db.begin() needed.
+    # Step 2: atomic TX — write batch_jobs + outbox_events together, then publish to Kafka.
+    # (get_db() session is autocommit=False, so a transaction is already active.)
     try:
         # Insert batch_jobs record
         db.execute(
@@ -353,10 +355,7 @@ async def upload_batch(
                     "event_id": event_id,
                     "aggregate_id": batch_id,
                     "topic": settings.raw_ingestion_topic,
-                    # Unique partition key per page event: identical keys hash
-                    # to the same Kafka partition, which would pin all 50
-                    # events to one worker. A unique key spreads events across
-                    # all partitions so the consumer group load-balances.
+                    # Unique key per page so events spread across partitions (identical keys pin to one worker).
                     "partition_key": f"{batch_id}:{page['page_index']}",
                     "payload": json.dumps(outbox_payload),
                 },

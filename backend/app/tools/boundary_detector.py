@@ -16,7 +16,6 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)

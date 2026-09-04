@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -128,16 +128,4 @@ class ProcessedPage(BaseModel):
     ocr_confidence: Optional[float] = None
 
 
-class DocumentProcessingContext(BaseModel):
-    document_id: UUID
-    vendor_code: str
-    original_filename: str
-    mime_type: str
-    file_size_bytes: int
-    page_count: int
-    pages: list[ProcessedPage]
-    classification_label: str
-    classification_score: float
-    anchor_keywords_found: bool
-    blur_score: float
-    blur_check_passed: bool
+

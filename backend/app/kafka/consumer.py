@@ -480,8 +480,27 @@ class InvoiceConsumer:
                 """),
                 {"batch_id": batch_id},
             ).scalar_one_or_none()
+
+            # Redelivery guard: a page already recorded skips re-run, double-insert,
+            # and double-count (cleaned page files become silent skips, not DLQ poisons).
+            already = db.execute(
+                text("""
+                    SELECT 1 FROM batch_invoice_items
+                    WHERE batch_id = :bid AND row_number = :rn
+                    LIMIT 1
+                """),
+                {"bid": batch_id, "rn": page_index},
+            ).first()
         finally:
             db.close()
+
+        if already is not None:
+            logger.info(
+                "Redelivered page event already processed; skipping",
+                extra={"batch_id": batch_id, "page_index": page_index},
+            )
+            _cleanup_page_file(file_path)
+            return
 
         if database_vendor_code is None:
             raise TerminalProcessingError(
@@ -595,7 +614,35 @@ class InvoiceConsumer:
 
                 is_complete = _update_batch_progress(db, batch_id, success=True)
             else:
-                is_complete = _update_batch_progress(db, batch_id, success=False)
+                # P2: a permanently failed extraction is an operational event -
+                # record it (idempotently) so batch counts + dashboard stay honest.
+                from sqlalchemy import text
+                insert_res = db.execute(
+                    text("""
+                        INSERT INTO batch_invoice_items (
+                            batch_id, document_id, row_number, invoice_number,
+                            status, error_message, processing_time_ms
+                        )
+                        SELECT :bid, NULL, :row_number, NULL, 'FAILED',
+                               LEFT(:error, 500), :pt_ms
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM batch_invoice_items
+                            WHERE batch_id = :bid AND row_number = :row_number
+                              AND status = 'FAILED'
+                        )
+                    """),
+                    {
+                        "bid": batch_id,
+                        "row_number": page_index,
+                        "error": result.get("error") or "Unknown extraction failure",
+                        "pt_ms": result.get("processing_time_ms", 0),
+                    },
+                )
+                # Only advance the failed counter if this delivery wrote the row -
+                # a redelivered failure must not double-count (fixes 53 > 50 drift).
+                is_complete = False
+                if insert_res.rowcount:
+                    is_complete = _update_batch_progress(db, batch_id, success=False)
                 logger.warning(
                     "Page processing failed",
                     extra={
@@ -756,10 +803,23 @@ class InvoiceConsumer:
         if not batch_id:
             return
 
+        from sqlalchemy import text
         from app.db.session import SessionLocal
 
         db = SessionLocal()
         try:
+            # Only the first delivery of a poison event may advance the
+            # failed counter (kills the 52+35 > 50 drift on redelivery).
+            already = db.execute(
+                text("""
+                    SELECT 1 FROM batch_invoice_items
+                    WHERE batch_id = :bid AND row_number = :rn
+                    LIMIT 1
+                """),
+                {"bid": batch_id, "rn": data.get("page_index")},
+            ).first()
+            if already is not None:
+                return
             is_complete = _update_batch_progress(db, batch_id, success=False)
             if is_complete:
                 _complete_batch(db, batch_id)

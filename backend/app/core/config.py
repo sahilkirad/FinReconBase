@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     redis_url: str = Field(default='redis://redis:6379/0')
     gemini_rpm_limit: int = Field(default=15)
 
+    # VLM request timeout (seconds). Dense OCR on the free tier routinely
+    # exceeds 60s; let slow calls finish instead of aborting them (a client
+    # DeadlineExceeded is NOT retried today - it kills the page in one shot).
+    gemini_request_timeout_s: int = Field(default=300, ge=30, le=600)
+
     # Worker configuration
     layer1_consumer_group: str = Field(default='layer1_extractor_group')
     layer1_max_concurrent: int = Field(default=3)
@@ -87,6 +92,11 @@ class Settings(BaseSettings):
     layer2_poll_interval_s: float = Field(default=3.0)  # DB boundary poller cadence
     layer2_buffer_grace_polls: int = Field(default=10)  # Sealed-batch buffer drain grace
     layer2_tds_category: str = Field(default='194C')  # Deterministic TDS slab for waterfall
+
+    # Demo auto-feed generator (POST /demo/auto-generate-feeds): bounds for the
+    # server-side wait that lands Streams 2 & 3 before the Layer 2 seal.
+    auto_feed_wait_s: int = Field(default=3600, ge=30, le=21600)
+    auto_feed_poll_s: float = Field(default=3.0, ge=1.0, le=60.0)
 
     # Layer 5: Ledger Writer (immutable double-entry sink)
     layer5_consumer_group: str = Field(default='layer5-ledger-writer-cg')

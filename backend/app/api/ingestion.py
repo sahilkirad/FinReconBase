@@ -25,6 +25,7 @@ from app.db.session import get_db
 from app.schemas.ingestion import (
     BankIngestResponse,
     IngestionErrorResponse,
+    RazorpayBatchResponse,
     RazorpayWebhookResponse,
 )
 from app.schemas.layer2_tools import BankTransactionPayload, RazorpaySettlementPayload
@@ -76,6 +77,29 @@ def _require_onboarded_vendor(db: Session, vendor_code: str) -> None:
         )
 
 
+def _razorpay_insert_params(
+    payload: RazorpaySettlementPayload,
+    vendor_code: str,
+) -> dict:
+    """Shared bind params for the idempotent razorpay_settlements INSERT."""
+    return {
+        "payout_id": payload.payout_id,
+        "fund_account_id": payload.fund_account_id,
+        "amount_paise": payload.amount_paise,
+        "currency": payload.currency,
+        "status": payload.status,
+        "utr": payload.utr,
+        "reference_id": payload.reference_id,
+        "narration": payload.narration,
+        "fees_paise": payload.fees_paise,
+        "tax_paise": payload.tax_paise,
+        "mode": payload.mode,
+        "purpose": payload.purpose,
+        "vendor_code": vendor_code,
+        "event_created_at_epoch": payload.event_created_at_epoch,
+    }
+
+
 # =============================================================================
 # Stream 2: Razorpay webhook
 # =============================================================================
@@ -99,22 +123,7 @@ def ingest_razorpay_settlement(
     try:
         row = db.execute(
             text(_INSERT_RAZORPAY_SQL),
-            {
-                "payout_id": payload.payout_id,
-                "fund_account_id": payload.fund_account_id,
-                "amount_paise": payload.amount_paise,
-                "currency": payload.currency,
-                "status": payload.status,
-                "utr": payload.utr,
-                "reference_id": payload.reference_id,
-                "narration": payload.narration,
-                "fees_paise": payload.fees_paise,
-                "tax_paise": payload.tax_paise,
-                "mode": payload.mode,
-                "purpose": payload.purpose,
-                "vendor_code": vendor_code,
-                "event_created_at_epoch": payload.event_created_at_epoch,
-            },
+            _razorpay_insert_params(payload, vendor_code),
         ).first()
         db.commit()
     except Exception as exc:
@@ -150,6 +159,60 @@ def ingest_razorpay_settlement(
         payout_id=payload.payout_id,
         status="duplicate",
         message="Duplicate webhook delivery ignored (payout already recorded).",
+    )
+
+
+@razorpay_router.post(
+    "/razorpay/batch",
+    response_model=RazorpayBatchResponse,
+    status_code=status.HTTP_200_OK,
+    responses={403: {"model": IngestionErrorResponse}, 422: {"model": IngestionErrorResponse}},
+)
+def ingest_razorpay_settlement_batch(
+    payload: list[RazorpaySettlementPayload],
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_current_user_context),
+) -> RazorpayBatchResponse:
+    """Record many Razorpay settlements in one call (Track 4 feed upload).
+
+    Mirrors the bank feed semantics: per-record idempotency via
+    ON CONFLICT (payout_id) DO NOTHING; re-deliveries are absorbed and
+    reported as duplicates so webhook replays never fail.
+    """
+    vendor_code = str(user_context["vendor_code"])
+    _require_onboarded_vendor(db, vendor_code)
+
+    accepted = 0
+    try:
+        for settlement in payload:
+            row = db.execute(
+                text(_INSERT_RAZORPAY_SQL),
+                _razorpay_insert_params(settlement, vendor_code),
+            ).first()
+            if row is not None:
+                accepted += 1
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Razorpay batch ingestion failed", extra={"error": str(exc)})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error_code": "RAZORPAY_BATCH_INGESTION_FAILED",
+                "message": f"Failed to persist Razorpay settlements: {exc}",
+            },
+        )
+
+    duplicates = len(payload) - accepted
+    logger.info(
+        "Razorpay batch ingested",
+        extra={"accepted": accepted, "duplicates": duplicates, "vendor_code": vendor_code},
+    )
+    return RazorpayBatchResponse(
+        accepted=accepted,
+        duplicates=duplicates,
+        total=len(payload),
+        message=f"Recorded {accepted} of {len(payload)} Razorpay settlements ({duplicates} duplicates).",
     )
 
 

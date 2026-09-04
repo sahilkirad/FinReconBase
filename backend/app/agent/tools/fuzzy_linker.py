@@ -17,12 +17,16 @@ Legs: the same tool verifies Leg A (invoice -> Razorpay narration) and
 Leg B (Razorpay -> bank narration) by passing the correct narration field.
 """
 
+import logging
+
 from app.schemas.layer2_tools import (
     FuzzyDiagnosticTrace,
     FuzzyLinkerInput,
     FuzzyLinkerResult,
     FuzzyLinkStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Deterministic normalization tables
@@ -296,6 +300,14 @@ def run_fuzzy_text_linker(inp: FuzzyLinkerInput) -> FuzzyLinkerResult:
     score, phonetic_match = token_set_ratio_tokens(source_tokens, target_tokens)
 
     resolved = score >= inp.match_threshold
+    logger.info(
+        "FUZZY_VERDICT",
+        extra={
+            "status": FuzzyLinkStatus.ENTITY_RESOLVED if resolved else FuzzyLinkStatus.ENTITY_MISMATCH,
+            "score": round(score, 4),
+            "phonetic_match": phonetic_match,
+        },
+    )
     return FuzzyLinkerResult(
         status=FuzzyLinkStatus.ENTITY_RESOLVED if resolved else FuzzyLinkStatus.ENTITY_MISMATCH,
         confidence_score=score,

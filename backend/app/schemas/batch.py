@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class BatchUploadResponse(BaseModel):
@@ -66,18 +66,3 @@ class BatchErrorResponse(BaseModel):
     detail: Optional[dict] = None
 
 
-class CSVValidationRow(BaseModel):
-    """Validation result for a single CSV row."""
-    row_number: int
-    is_valid: bool
-    errors: list[str] = []
-    invoice_number: Optional[str] = None
-
-
-class CSVValidationSummary(BaseModel):
-    """Summary of CSV validation results."""
-    total_rows: int
-    valid_rows: int
-    invalid_rows: int
-    duplicate_rows: int
-    errors: list[CSVValidationRow] = []

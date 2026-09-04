@@ -5,8 +5,11 @@ Validates extracted invoice amounts BEFORE data touches downstream
 financial engines. Uses Decimal exclusively - no floats anywhere.
 """
 
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -140,9 +143,21 @@ def run_checksum(payload: dict) -> list[str]:
     line_items = payload.get("line_items", [])
     if not line_items:
         all_errors.append("No line items found in invoice")
+        logger.warning(
+            "MATH_CHECKSUM_FAILED: no line items",
+            extra={"error": all_errors[0]},
+        )
         return all_errors
 
     all_errors.extend(validate_line_items(line_items))
     all_errors.extend(validate_financial_summary(payload.get("financial_summary", {}), line_items))
+
+    if all_errors:
+        logger.warning(
+            "MATH_CHECKSUM_FAILED",
+            extra={"errors": all_errors[:5]},
+        )
+    else:
+        logger.info("MATH_CHECKSUM_PASS")
 
     return all_errors

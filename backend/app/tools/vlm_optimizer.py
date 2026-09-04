@@ -219,11 +219,6 @@ class TokenBucketRateLimiter:
 _vlm_rate_limiter = TokenBucketRateLimiter(max_tokens=10, refill_rate=10 / 60)
 
 
-def get_vlm_rate_limiter() -> TokenBucketRateLimiter:
-    """Get the global in-memory VLM rate limiter (fallback)."""
-    return _vlm_rate_limiter
-
-
 # =============================================================================
 # Full Jitter Exponential Backoff
 # =============================================================================
@@ -408,8 +403,17 @@ class RateLimitedGeminiClient:
                     last_exception = e
                     error_str = str(e).lower()
 
-                    # Check if it's a 429 rate limit error
-                    if "429" in error_str or "rate" in error_str:
+                    # Transient failures are retryable: 429/quota/503, timeouts,
+                    # deadline exceeded, connection resets (mirrors retry_with_backoff)
+                    retryable = any(
+                        indicator in error_str
+                        for indicator in (
+                            "429", "rate limit", "quota", "503",
+                            "service unavailable", "timeout",
+                            "deadline exceeded", "connection",
+                        )
+                    )
+                    if retryable:
                         # Pillar 3: Exponential Backoff with Full Jitter
                         retry_after = _extract_retry_after(error_str)
 

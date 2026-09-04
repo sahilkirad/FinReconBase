@@ -92,10 +92,18 @@ def pre_check(state: ReconciliationState) -> dict:
         db.close()
 
     if exists:
+        logger.info(
+            "PRECHECK_ALREADY_COMMITTED",
+            extra={"document_id": document_id, "invoice_number": state.get("invoice_number")},
+        )
         return {
             "terminal_status": "ALREADY_COMMITTED",
             "terminal_detail": "document already present in invoice_reconciliations",
         }
+    logger.info(
+        "PRECHECK_PASS",
+        extra={"document_id": document_id, "invoice_number": state.get("invoice_number")},
+    )
     return {}
 
 

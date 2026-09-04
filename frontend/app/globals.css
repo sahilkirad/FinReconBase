@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #0d94fb;
+  --navy: #012652;
+  --line: #ebecf0;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  @apply bg-canvas text-slate-800 font-sans;
+}
+
+/* Transactions, UTRs, batch ids and amounts must look "engineered". */
+.font-numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: rgba(13, 148, 251, 0.2);
+}
+
+/* Slim, unobtrusive scrollbars for terminal / table panes */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}

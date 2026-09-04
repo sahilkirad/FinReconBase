@@ -11,7 +11,6 @@ PREREQUISITE_FAILED guardrails inspect (Core logic.docx, Tool-4 section).
 """
 
 import operator
-from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
 try:  # langgraph installed (Docker/runtime)
@@ -27,48 +26,6 @@ except Exception:  # pragma: no cover — offline import guard (host unit tests)
             ):
                 combined.append(item)
         return combined
-
-
-@dataclass
-class InvoiceRunContext:
-    """Deterministic context materialized per invoice before any LLM call.
-
-    Built from the buffered CloudEvents payload + DB reads. Holds only values
-    the deterministic tools + ledger commit need; supplier/buyer PAN/GSTIN are
-    already tokenized in the masked payload.
-    """
-
-    batch_id: str | None
-    vendor_code: str
-    document_id: str
-    invoice_number: str
-    # Financial anchors (integer paise)
-    grand_total_paise: int
-    tds_deduction_paise: int
-    tds_category_code: str = "194C"
-    gateway_fees_paise: int = 0
-    gateway_tax_paise: int = 0
-    # Masked payload shown to the LLM (tokens, never plaintext PII)
-    masked_payload: dict[str, Any] = field(default_factory=dict)
-    # Razorpay candidate leg (if a payout references this invoice)
-    razorpay_payout_id: str | None = None
-    razorpay_utr: str | None = None
-    razorpay_narration: str | None = None
-
-
-@dataclass
-class SubgraphOutcome:
-    """Terminal outcome of one invoice sub-graph (reduce-phase input)."""
-
-    document_id: str
-    invoice_number: str
-    vendor_code: str
-    batch_id: str | None
-    terminal: str  # LEDGER_COMMITTED | ALREADY_COMMITTED | EXCEPTION_ROUTED | BLOCKED | ERROR
-    utr_number: str | None = None
-    razorpay_payout_id: str | None = None
-    net_settled_paise: int | None = None
-    message: str = ""
 
 
 class ReconciliationState(TypedDict, total=False):
