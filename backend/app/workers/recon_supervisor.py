@@ -457,14 +457,16 @@ def main():
         logger.info("Recon supervisor stopped")
 
 
-def _run_consumer():
+def _run_consumer() -> None:
     from app.kafka.layer2_consumer import Layer2ExtractedConsumer
+    from app.workers.supervision import run_consumer_supervisor
 
-    consumer = Layer2ExtractedConsumer()
-    try:
-        consumer.start()
-    except Exception as e:
-        logger.error("Layer 2 consumer crashed", extra={"error": str(e)})
+    # Supervisor restarts the consumer with a capped backoff on any crash
+    # (e.g. KafkaTimeoutError while the broker is booting), so a Kafka
+    # restart can never permanently kill this buffer thread.
+    run_consumer_supervisor(
+        "layer2-consumer", lambda: Layer2ExtractedConsumer(), log=logger
+    )
 
 
 if __name__ == "__main__":

@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     layer2_buffer_grace_polls: int = Field(default=10)  # Sealed-batch buffer drain grace
     layer2_tds_category: str = Field(default='194C')  # Deterministic TDS slab for waterfall
 
+    # Layer 5: Ledger Writer (immutable double-entry sink)
+    layer5_consumer_group: str = Field(default='layer5-ledger-writer-cg')
+    layer5_exception_consumer_group: str = Field(default='layer5-exception-materializer-cg')
+    ledger_fatal_dlq_topic: str = Field(default='ledger.fatal.dlq.events')
+
     # Kafka topics
     raw_ingestion_topic: str = Field(default='invoice.processing.events')
     invoice_extracted_topic: str = Field(default='invoice.extracted.events')
