@@ -59,22 +59,22 @@ def main() -> None:
 
 def _run_ledger_consumer() -> None:
     from app.kafka.ledger_consumer import LedgerConsumer
+    from app.workers.supervision import run_consumer_supervisor
 
-    consumer = LedgerConsumer()
-    try:
-        consumer.start()
-    except Exception as e:
-        logger.error("Ledger consumer crashed", extra={"error": str(e)})
+    # Supervisor restarts the consumer with a capped backoff on any crash
+    # (e.g. KafkaTimeoutError while the broker is booting), so a Kafka
+    # restart can never permanently kill this consumer thread.
+    run_consumer_supervisor("ledger-consumer", lambda: LedgerConsumer(), log=logger)
 
 
 def _run_exception_consumer() -> None:
     from app.kafka.exception_consumer import ExceptionTicketConsumer
+    from app.workers.supervision import run_consumer_supervisor
 
-    consumer = ExceptionTicketConsumer()
-    try:
-        consumer.start()
-    except Exception as e:
-        logger.error("Exception materializer crashed", extra={"error": str(e)})
+    # Same supervised restart loop as the ledger consumer above.
+    run_consumer_supervisor(
+        "exception-materializer", lambda: ExceptionTicketConsumer(), log=logger
+    )
 
 
 if __name__ == "__main__":
