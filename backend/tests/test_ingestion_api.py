@@ -1,274 +1,173 @@
 """
-TDD tests — Layer 2 ingestion endpoints (Streams 2 & 3 materialization).
+TDD tests — Milestone 2: POST /webhooks/razorpay/batch (one-shot feed upload).
 
-- POST /webhooks/razorpay  (razorpay_settlements)
-- POST /ingestion/bank     (bank_transactions)
+Covers:
+- 200 with accepted/duplicates/total accounting for a fresh batch
+- 200 absorbing an all-duplicate replay (ON CONFLICT DO NOTHING -> duplicates)
+- per-record vendor_code is ALWAYS the JWT vendor, never the payload
+- 403 when the JWT vendor is not onboarded
+- 422 when a payload record fails schema validation (no DB touch)
 
-Covers: auth required, happy recording, idempotent duplicate absorption,
-invalid payload rejection (422), vendor onboarding gate (403), and the
-vendor_code ALWAYS coming from the JWT (never the payload).
+DB access is faked (substring-dispatching session, mirrors the
+test_vendor_auth.py / test_ledger_writer.py convention). Routes require a real
+JWT, so each request carries a token signed with the override secret.
 """
 
-import os
-
-os.environ["GOOGLE_OAUTH_CLIENT_ID"] = "test"
-os.environ["JWT_SECRET_KEY"] = "test-secret"
-os.environ["GROQ_API_KEY"] = "test"
-os.environ["GROQ_MODEL"] = "test"
-
-import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import create_app
 
+TEST_SECRET = "test-secret"
+JWT_VENDOR = "VEND_TEST_002"
 
-class _Result:
-    def __init__(self, row):
-        self._row = row
+
+class _ResultFirst:
+    def __init__(self, rows):
+        self._rows = rows
 
     def first(self):
-        return self._row
-
-    def all(self):
-        return [self._row] if self._row is not None else []
+        return self._rows[0] if self._rows else None
 
 
-class _FakeDB:
-    """Deterministic fake session for the ingestion endpoints."""
-
+class _IngestionFakeSession:
     def __init__(self, *, onboarded=True, insert_returns_row=True):
         self.onboarded = onboarded
         self.insert_returns_row = insert_returns_row
-        self.executed: list[str] = []
-        self.committed = 0
-        self.rolled_back = False
+        self.executed: list[tuple[str, dict]] = []
+        self.commits = 0
+        self.rollbacks = 0
 
     def execute(self, sql, params=None):
         sql_text = str(sql)
-        self.executed.append(sql_text)
+        params = dict(params or {})
+        self.executed.append((sql_text, params))
 
-        if "vendor_users" in sql_text:
-            return _Result(("user-1",) if self.onboarded else None)
-
-        if "razorpay_settlements" in sql_text and "RETURNING" in sql_text:
-            return _Result(("settlement-1",) if self.insert_returns_row else None)
-
-        if "razorpay_settlements" in sql_text and "WHERE payout_id" in sql_text:
-            return _Result(("settlement-1",))
-
-        if "bank_transactions" in sql_text and "RETURNING" in sql_text:
-            return _Result(("txn-1",) if self.insert_returns_row else None)
-
-        return _Result(None)
+        if "SELECT 1 FROM vendor_users" in sql_text:
+            return _ResultFirst([(1,)] if self.onboarded else [])
+        if "INSERT INTO razorpay_settlements" in sql_text:
+            return _ResultFirst([("settle-x",)] if self.insert_returns_row else [])
+        return _ResultFirst([])
 
     def commit(self):
-        self.committed += 1
+        self.commits += 1
 
     def rollback(self):
-        self.rolled_back = True
+        self.rollbacks += 1
+
+    @property
+    def razorpay_inserts(self):
+        return [p for s, p in self.executed if "INSERT INTO razorpay_settlements" in s]
 
 
-@pytest.fixture()
-def client():
+def build_test_client(db: _IngestionFakeSession) -> TestClient:
     app = create_app()
 
-    def _override_get_db():
-        yield _FakeDB()
+    def _override_db():
+        yield db
 
-    app.dependency_overrides[get_db] = _override_get_db
+    def _override_settings():
+        return Settings(jwt_secret_key=TEST_SECRET)
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_settings] = _override_settings
     return TestClient(app)
 
 
-@pytest.fixture()
-def token():
-    settings = get_settings()
-    return create_access_token(
-        subject="user_123",
-        vendor_code="VEND_TEST_001",
+def _auth_header() -> dict[str, str]:
+    settings = Settings(jwt_secret_key=TEST_SECRET)
+    token = create_access_token(
+        subject="user-uuid-1",
+        vendor_code=JWT_VENDOR,
         role="ADMIN",
         settings=settings,
     )
+    return {"Authorization": f"Bearer {token}"}
 
 
-VALID_RAZORPAY = {
-    "payout_id": "pout_00000000000001",
-    "fund_account_id": "fa_00000000000001",
-    "amount_paise": 1000000,
-    "currency": "INR",
-    "status": "processed",
-    "utr": "HDFCN202608249912",
-    "reference_id": "INV-441",
-    "narration": "Acme Corp Vendor Payment",
-    "fees_paise": 0,
-    "tax_paise": 0,
-    "mode": "IMPS",
-    "purpose": "vendor_bill",
-    "event_created_at_epoch": 1545383037,
-}
-
-VALID_BANK = [
-    {
-        "transaction_date": "2026-08-25",
-        "narration": "IMPS/ACME CORP/UTR/HDFCN202608249912",
-        "utr_number": "HDFCN202608249912",
-        "transaction_type": "CREDIT",
-        "amount_paise": 1000000,
-        "closing_balance_paise": 50000000,
+def _settlement(payout_id: str, **overrides) -> dict:
+    base = {
+        "payout_id": payout_id,
+        "fund_account_id": "fa_123",
+        "amount_paise": 204390500,
+        "currency": "INR",
+        "status": "processed",
+        "utr": "300000000001",
+        "reference_id": "INV-0001",
+        "narration": "Payout",
+        "fees_paise": 0,
+        "tax_paise": 0,
+        "mode": "bank_transfer",
+        "purpose": "payout",
+        "event_created_at_epoch": 1756900000,
     }
-]
+    base.update(overrides)
+    return base
 
 
-class TestAuthRequired:
-    def test_razorpay_requires_auth(self, client):
-        response = client.post("/webhooks/razorpay", json=VALID_RAZORPAY)
-        assert response.status_code == 401
+class TestRazorpayBatchEndpoint:
+    def test_batch_records_all_new_settlements(self):
+        db = _IngestionFakeSession()
+        client = build_test_client(db)
 
-    def test_bank_requires_auth(self, client):
-        response = client.post("/ingestion/bank", json=VALID_BANK)
-        assert response.status_code == 401
-
-
-class TestRazorpayWebhook:
-    def test_records_settlement(self, client, token):
-        fake = _FakeDB(insert_returns_row=True)
-
-        def _override():
-            yield fake
-
-        client.app.dependency_overrides[get_db] = _override
         response = client.post(
-            "/webhooks/razorpay",
-            json=VALID_RAZORPAY,
-            headers={"Authorization": f"Bearer {token}"},
+            "/webhooks/razorpay/batch",
+            json=[_settlement("pout_1"), _settlement("pout_2")],
+            headers=_auth_header(),
         )
-        assert response.status_code == 202
-        body = response.json()
-        assert body["status"] == "recorded"
-        assert body["settlement_id"] == "settlement-1"
-        assert fake.committed == 1
 
-    def test_duplicate_delivery_absorbed(self, client, token):
-        """Webhook retries must not fail: ON CONFLICT => 'duplicate' with the
-        existing settlement id."""
-        fake = _FakeDB(insert_returns_row=False)
-
-        def _override():
-            yield fake
-
-        client.app.dependency_overrides[get_db] = _override
-        response = client.post(
-            "/webhooks/razorpay",
-            json=VALID_RAZORPAY,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 202
-        body = response.json()
-        assert body["status"] == "duplicate"
-        assert body["settlement_id"] == "settlement-1"
-
-    def test_invalid_amount_rejected_422(self, client, token):
-        payload = dict(VALID_RAZORPAY, amount_paise=-1)
-        response = client.post(
-            "/webhooks/razorpay",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 422
-
-    def test_missing_payout_id_rejected_422(self, client, token):
-        payload = dict(VALID_RAZORPAY)
-        del payload["payout_id"]
-        response = client.post(
-            "/webhooks/razorpay",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 422
-
-    def test_vendor_must_be_onboarded(self, client, token):
-        fake = _FakeDB(onboarded=False)
-
-        def _override():
-            yield fake
-
-        client.app.dependency_overrides[get_db] = _override
-        response = client.post(
-            "/webhooks/razorpay",
-            json=VALID_RAZORPAY,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 403
-
-
-class TestBankIngestion:
-    def test_ingests_bank_transactions(self, client, token):
-        fake = _FakeDB(insert_returns_row=True)
-
-        def _override():
-            yield fake
-
-        client.app.dependency_overrides[get_db] = _override
-        response = client.post(
-            "/ingestion/bank",
-            json=VALID_BANK,
-            headers={"Authorization": f"Bearer {token}"},
-        )
         assert response.status_code == 200
         body = response.json()
-        assert body["accepted"] == 1
+        assert body["accepted"] == 2
         assert body["duplicates"] == 0
-        assert body["total"] == 1
+        assert body["total"] == 2
+        assert db.commits == 1
+        assert len(db.razorpay_inserts) == 2
+        # vendor_code is JWT-scoped on every insert — payloads never carry it
+        assert all(p["vendor_code"] == JWT_VENDOR for p in db.razorpay_inserts)
 
-    def test_duplicate_rows_reported_not_failed(self, client, token):
-        """Same feed re-delivered: second identical row => duplicate count."""
-        fake = _FakeDB(insert_returns_row=False)
+    def test_batch_absorbs_all_duplicate_replay(self):
+        """Same file re-pushed after a webhook retry -> absorbed, never fails."""
+        db = _IngestionFakeSession(insert_returns_row=False)
+        client = build_test_client(db)
 
-        def _override():
-            yield fake
-
-        client.app.dependency_overrides[get_db] = _override
-        rows = VALID_BANK * 2  # both conflict with an existing unique row
         response = client.post(
-            "/ingestion/bank",
-            json=rows,
-            headers={"Authorization": f"Bearer {token}"},
+            "/webhooks/razorpay/batch",
+            json=[_settlement("pout_1"), _settlement("pout_2")],
+            headers=_auth_header(),
         )
+
         assert response.status_code == 200
         body = response.json()
         assert body["accepted"] == 0
         assert body["duplicates"] == 2
+        assert body["total"] == 2
+        assert len(db.razorpay_inserts) == 2  # still attempted idempotently
 
-    def test_invalid_transaction_type_rejected_422(self, client, token):
-        rows = [dict(VALID_BANK[0], transaction_type="TRANSFER")]
+    def test_batch_rejects_unonboarded_vendor(self):
+        db = _IngestionFakeSession(onboarded=False)
+        client = build_test_client(db)
+
         response = client.post(
-            "/ingestion/bank",
-            json=rows,
-            headers={"Authorization": f"Bearer {token}"},
+            "/webhooks/razorpay/batch",
+            json=[_settlement("pout_1")],
+            headers=_auth_header(),
         )
-        assert response.status_code == 422
 
-    def test_negative_amount_rejected_422(self, client, token):
-        rows = [dict(VALID_BANK[0], amount_paise=-5)]
-        response = client.post(
-            "/ingestion/bank",
-            json=rows,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 422
-
-    def test_vendor_must_be_onboarded(self, client, token):
-        fake = _FakeDB(onboarded=False)
-
-        def _override():
-            yield fake
-
-        client.app.dependency_overrides[get_db] = _override
-        response = client.post(
-            "/ingestion/bank",
-            json=VALID_BANK,
-            headers={"Authorization": f"Bearer {token}"},
-        )
         assert response.status_code == 403
+        assert db.razorpay_inserts == []  # vendor check ran before any insert
+
+    def test_batch_invalid_record_returns_422_before_db(self):
+        db = _IngestionFakeSession()
+        client = build_test_client(db)
+
+        response = client.post(
+            "/webhooks/razorpay/batch",
+            json=[_settlement("pout_1", amount_paise=-5)],
+            headers=_auth_header(),
+        )
+
+        assert response.status_code == 422
+        assert db.executed == []

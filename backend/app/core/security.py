@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -58,6 +61,67 @@ def decode_access_token(token: str, settings: Settings) -> dict[str, Any]:
         )
 
     return payload
+
+
+# =============================================================================
+# Native vendor API-secret hashing (Track 4 frontend auth)
+# =============================================================================
+
+_API_SECRET_PBKDF2_ITERATIONS = 260_000
+# Iterations are read back from the stored string, so this cap only guards
+# against a corrupted/hostile row forcing an absurd CPU burn on verify.
+_MAX_PBKDF2_ITERATIONS = 1_000_000
+
+
+def hash_api_secret(
+    secret: str,
+    *,
+    iterations: int = _API_SECRET_PBKDF2_ITERATIONS,
+) -> str:
+    """Hash an API secret into a self-describing PBKDF2-HMAC-SHA256 string.
+
+    Format: ``pbkdf2_sha256$<iterations>$<salt_hex>$<dk_hex>``
+    """
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        secret.encode("utf-8"),
+        bytes.fromhex(salt),
+        iterations,
+    )
+    return f"pbkdf2_sha256${iterations}${salt}${dk.hex()}"
+
+
+def verify_api_secret(secret: str, encoded: str) -> bool:
+    """Constant-time verification of a secret against a stored hash string."""
+    try:
+        algorithm, iterations_raw, salt_hex, expected_hex = encoded.split("$", 3)
+        iterations = int(iterations_raw)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(expected_hex)
+    except (ValueError, TypeError):
+        return False
+
+    if algorithm != "pbkdf2_sha256" or not 1 <= iterations <= _MAX_PBKDF2_ITERATIONS:
+        return False
+
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        secret.encode("utf-8"),
+        salt,
+        iterations,
+    )
+    return hmac.compare_digest(dk, expected)
+
+
+def normalize_vendor_code(raw: str) -> str:
+    """Canonical vendor-code form: trimmed + upper-cased.
+
+    Mirrors the CHECK constraint on vendor_credentials.vendor_code
+    (uppercase [A-Z0-9_-]) so VEND_test_002 and VEND_TEST_002 are the same
+    tenant.
+    """
+    return raw.strip().upper()
 
 
 def verify_google_id_token(token: str, settings: Settings) -> dict[str, Any]:

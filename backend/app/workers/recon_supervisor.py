@@ -70,6 +70,7 @@ def run_invoice_subgraph(
     invoice_number: str,
     payload: dict,
     supervisor_llm=None,
+    telemetry=None,        # optional BatchTelemetryWriter (live dashboard)
 ) -> dict:
     """Invoke one isolated per-invoice LangGraph sub-graph (Map leaf).
 
@@ -99,15 +100,44 @@ def run_invoice_subgraph(
     config = make_thread_config(thread_key, document_id, run_token=run_token)
 
     outcome = invoke_invoice(graph, state=initial_state, config=config)
+
+    # ---- live telemetry (best-effort; never affects the outcome) ----------
+    from app.telemetry.events import (
+        build_invoice_events,
+        classify_invoice_path,
+    )
+
+    terminal = outcome.get("terminal_status") or "ERROR"
+    classification = classify_invoice_path(outcome.get("messages") or [])
+
+    if telemetry is not None and batch_id is not None:
+        telemetry.publish(
+            batch_id,
+            build_invoice_events(
+                invoice_number=invoice_number,
+                subset_status=outcome.get("subset_status"),
+                subset_message=outcome.get("subset_message"),
+                path=classification["path"],
+                llm_invoked=classification["llm_invoked"],
+                tool_calls=classification["tool_calls"],
+                terminal=terminal,
+                terminal_detail=outcome.get("terminal_detail") or "",
+                terminal_utr=outcome.get("terminal_utr"),
+            ),
+        )
+
     return {
         "document_id": document_id,
         "invoice_number": invoice_number,
         "vendor_code": vendor_code,
         "batch_id": batch_id,
-        "terminal": outcome.get("terminal_status") or "ERROR",
+        "terminal": terminal,
         "terminal_detail": outcome.get("terminal_detail") or "",
         "terminal_utr": outcome.get("terminal_utr"),
         "razorpay_payout_id": outcome.get("terminal_payout_id"),
+        "path": classification["path"],
+        "llm_invoked": classification["llm_invoked"],
+        "tool_calls": classification["tool_calls"],
     }
 
 
@@ -118,6 +148,7 @@ def run_batch_reconciliation(
     thread_key: str,       # run marker key used for LangGraph thread ids
     invoices: list[dict],
     supervisor_llm=None,
+    telemetry=None,        # optional BatchTelemetryWriter (live dashboard)
 ) -> tuple[int, int, list[dict]]:
     """Execute the Map phase for one sealed batch: one sub-graph per invoice.
 
@@ -125,6 +156,14 @@ def run_batch_reconciliation(
     invoice_reconciliations short-circuit inside the graph; millisecond races
     resolve through UNIQUE(document_id) + DUPLICATE_EVENT absorption.
     """
+    from app.telemetry.events import build_batch_event
+
+    if telemetry is not None and batch_id is not None:
+        telemetry.publish(
+            batch_id,
+            [build_batch_event(batch_id, "batch_started", "Execution pool running the Map phase")],
+        )
+
     matched = 0
     exceptions = 0
     outcomes: list[dict] = []
@@ -138,6 +177,7 @@ def run_batch_reconciliation(
             invoice_number=inv["invoice_number"],
             payload=inv.get("payload", {}),
             supervisor_llm=supervisor_llm,
+            telemetry=telemetry,
         )
         outcomes.append(result)
         if result["terminal"] in ("LEDGER_COMMITTED", "ALREADY_COMMITTED"):
@@ -152,6 +192,20 @@ def run_batch_reconciliation(
                 "terminal": result["terminal"],
             },
         )
+
+    if telemetry is not None and batch_id is not None:
+        telemetry.publish(
+            batch_id,
+            [
+                build_batch_event(
+                    batch_id,
+                    "batch_terminal",
+                    f"Run complete: {matched} settled / {exceptions} exceptions",
+                    matched=matched,
+                    exceptions=exceptions,
+                )
+            ],
+        )
     return matched, exceptions, outcomes
 
 
@@ -163,11 +217,12 @@ def run_batch_reconciliation(
 class BoundaryPoller:
     """Seals COMPLETED batches / dispatches singles to the execution pool."""
 
-    def __init__(self, buffer, pool: ThreadPoolExecutor, supervisor_llm=None):
+    def __init__(self, buffer, pool: ThreadPoolExecutor, supervisor_llm=None, telemetry=None):
         settings = get_settings()
         self.buffer = buffer
         self.pool = pool
         self.supervisor_llm = supervisor_llm
+        self.telemetry = telemetry  # optional BatchTelemetryWriter (live dashboard)
         self.interval_s = settings.layer2_poll_interval_s
         self.grace_polls = settings.layer2_buffer_grace_polls
         self._stop = threading.Event()
@@ -367,6 +422,7 @@ class BoundaryPoller:
                     thread_key=run_batch_id,
                     invoices=invoices,
                     supervisor_llm=self.supervisor_llm,
+                    telemetry=self.telemetry,
                 )
             except Exception as e:
                 last_error = str(e)
@@ -428,7 +484,11 @@ def main():
     from app.kafka.layer2_consumer import Layer2ExtractedConsumer
 
     buffer = Layer2RedisBuffer(settings.redis_url)
-    poller = BoundaryPoller(buffer, pool, supervisor_llm=supervisor_llm)
+
+    from app.telemetry.events import BatchTelemetryWriter
+
+    telemetry = BatchTelemetryWriter(settings.redis_url)
+    poller = BoundaryPoller(buffer, pool, supervisor_llm=supervisor_llm, telemetry=telemetry)
 
     # THREAD A —  consumer
     consumer_thread = threading.Thread(

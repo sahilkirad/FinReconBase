@@ -111,7 +111,16 @@ IMPORTANT:
 
 def _image_to_base64(image: np.ndarray) -> str:
     """Convert OpenCV numpy array to base64-encoded JPEG for Gemini API."""
-    _, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    # P1: cap the longest edge and drop JPEG quality so the base64 payload
+    # (and TPM cost per call) shrinks before upload.
+    h, w = image.shape[:2]
+    longest = max(h, w)
+    if longest > 1500:
+        scale = 1500 / longest
+        image = cv2.resize(
+            image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+        )
+    _, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return base64.b64encode(buffer).decode("utf-8")
 
 
@@ -166,10 +175,10 @@ def extract_invoice_json(
             # Send image + text (for image uploads where visual context matters)
             image_b64 = _image_to_base64(rgb_image)
             image_part = {"mime_type": "image/jpeg", "data": image_b64}
-            response = model.generate_content([prompt, image_part], request_options={"timeout": 60})
+            response = model.generate_content([prompt, image_part], request_options={"timeout": settings.gemini_request_timeout_s})
         else:
             # Text only (for PDFs where OCR is accurate)
-            response = model.generate_content(prompt, request_options={"timeout": 60})
+            response = model.generate_content(prompt, request_options={"timeout": settings.gemini_request_timeout_s})
 
         raw_text = response.text.strip()
         # Strip markdown code fences if present

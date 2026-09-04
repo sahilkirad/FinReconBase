@@ -19,6 +19,15 @@ class BankIngestResponse(BaseModel):
     message: str
 
 
+class RazorpayBatchResponse(BaseModel):
+    """One-shot replay of many Razorpay webhook events (Track 4 feed upload)."""
+
+    accepted: int
+    duplicates: int
+    total: int
+    message: str
+
+
 class IngestionErrorResponse(BaseModel):
     error_code: str
     message: str

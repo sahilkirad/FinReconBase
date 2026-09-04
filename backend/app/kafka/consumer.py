@@ -595,7 +595,35 @@ class InvoiceConsumer:
 
                 is_complete = _update_batch_progress(db, batch_id, success=True)
             else:
-                is_complete = _update_batch_progress(db, batch_id, success=False)
+                # P2: a permanently failed extraction is an operational event -
+                # record it (idempotently) so batch counts + dashboard stay honest.
+                from sqlalchemy import text
+                insert_res = db.execute(
+                    text("""
+                        INSERT INTO batch_invoice_items (
+                            batch_id, document_id, row_number, invoice_number,
+                            status, error_message, processing_time_ms
+                        )
+                        SELECT :bid, NULL, :row_number, NULL, 'FAILED',
+                               LEFT(:error, 500), :pt_ms
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM batch_invoice_items
+                            WHERE batch_id = :bid AND row_number = :row_number
+                              AND status = 'FAILED'
+                        )
+                    """),
+                    {
+                        "bid": batch_id,
+                        "row_number": page_index,
+                        "error": result.get("error") or "Unknown extraction failure",
+                        "pt_ms": result.get("processing_time_ms", 0),
+                    },
+                )
+                # Only advance the failed counter if this delivery wrote the row -
+                # a redelivered failure must not double-count (fixes 53 > 50 drift).
+                is_complete = False
+                if insert_res.rowcount:
+                    is_complete = _update_batch_progress(db, batch_id, success=False)
                 logger.warning(
                     "Page processing failed",
                     extra={
