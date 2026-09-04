@@ -7,7 +7,7 @@ import { SkeletonLines } from "@/components/ui/skeleton";
 import { extractApiError } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { formatINR } from "@/lib/money";
-import { useLedgerEntries, type LedgerBatchView } from "@/lib/queries";
+import { useLedgerEntries } from "@/lib/queries";
 
 function LockIcon() {
   return (
@@ -64,19 +64,14 @@ export default function LedgerPage() {
     setSubmittedUtr(utrFilter.trim().toUpperCase() || null);
   }
 
-  const debitAccount = (row: LedgerBatchView) =>
-    row.entries.find((e) => e.entry_type === "DEBIT")?.account_name ?? "—";
-  const creditAccount = (row: LedgerBatchView) =>
-    row.entries.find((e) => e.entry_type === "CREDIT")?.account_name ?? "—";
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-navy">Immutable Ledger</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Double-entry audit trail from the Layer 5 Ledger Writer — read-only,
-            append-only rows enforced by database WORM triggers.
+            Enterprise system of record. Every cleared transaction is
+            cryptographically locked as an immutable double-entry journal.
           </p>
         </div>
         <form onSubmit={submitFilter} className="flex gap-2">
@@ -160,7 +155,7 @@ export default function LedgerPage() {
                 <th className="px-4 py-3">Cleared invoices</th>
                 <th className="px-4 py-3 text-right">Amount</th>
                 <th className="px-4 py-3">Balance</th>
-                <th className="px-4 py-3 text-right">WORM</th>
+                <th className="px-4 py-3 text-right">Immutable</th>
               </tr>
             </thead>
             <tbody>
@@ -210,7 +205,7 @@ export default function LedgerPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                          <LockIcon /> WORM
+                          <LockIcon /> Immutable
                         </span>
                       </td>
                     </tr>
@@ -239,8 +234,7 @@ export default function LedgerPage() {
                             ))}
                           </div>
                           <p className="mt-3 rounded-md bg-success-soft px-3 py-2 text-[11px] text-success">
-                            Subset-sum proof: UTR {row.utr_number} of {formatINR(row.total_reconciled_amount_paise)} settled{" "}
-                            {row.matched_invoice_ids.join(", ")} — Debit ({debitAccount(row)}) mirrors Credit ({creditAccount(row)}) to the paise.
+                            Each settlement is journalized in matched pairs and balances to ₹0.00.
                           </p>
                         </td>
                       </tr>

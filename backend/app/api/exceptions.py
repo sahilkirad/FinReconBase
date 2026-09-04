@@ -14,6 +14,7 @@ Direct jumps (OPEN -> RESOLVED) and re-opens are rejected with 409 so an
 exception resolution is always a deliberate, reviewable act.
 """
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -28,6 +29,8 @@ from app.schemas.exceptions import (
     ExceptionTicketStatus,
     ExceptionTicketTransitionRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/exception-tickets", tags=["exceptions"])
 
@@ -129,6 +132,10 @@ def list_exception_tickets(
         {"vendor_code": vendor_code, "status_filter": status_filter, "limit": limit},
     ).all()
     items = [_row_to_ticket(row) for row in rows]
+    logger.info(
+        "EXCEPTION_TICKETS_READ",
+        extra={"vendor_code": vendor_code, "total": len(items), "status_filter": status_filter},
+    )
     return ExceptionTicketListResponse(
         vendor_code=vendor_code,
         total=len(items),
@@ -195,4 +202,8 @@ def transition_exception_ticket(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Exception ticket {ticket_id} not found",
         )
+    logger.info(
+        "EXCEPTION_TICKET_TRANSITIONED",
+        extra={"ticket_id": ticket_id, "from": current_status, "to": new_status},
+    )
     return _row_to_ticket(updated)

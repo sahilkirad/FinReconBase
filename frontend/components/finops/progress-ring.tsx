@@ -107,7 +107,7 @@ export function ProgressRing({
           <span className="font-mono tabular-nums text-navy">{Math.max(0, batchTotal - cleared - review)}</span>
         </div>
         <p className="border-t border-line pt-2 text-[11px] leading-relaxed text-slate-400">
-          Every cleared invoice posts a paired Debit/Credit to the General Ledger — balanced to ₹0.00.
+          Successfully matched invoices are automatically posted to the General Ledger.
         </p>
       </div>
     </div>

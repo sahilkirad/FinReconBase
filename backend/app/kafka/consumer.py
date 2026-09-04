@@ -481,10 +481,8 @@ class InvoiceConsumer:
                 {"batch_id": batch_id},
             ).scalar_one_or_none()
 
-            # Redelivery guard: a page already recorded (any status) must not
-            # re-run extraction, double-insert, or double-count. This also
-            # turns redelivered events whose page file was already cleaned
-            # into silent skips instead of file_not_found DLQ poisons.
+            # Redelivery guard: a page already recorded skips re-run, double-insert,
+            # and double-count (cleaned page files become silent skips, not DLQ poisons).
             already = db.execute(
                 text("""
                     SELECT 1 FROM batch_invoice_items

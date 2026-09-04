@@ -138,6 +138,10 @@ class PIIVault:
                 if isinstance(value, str) and value.strip():
                     banking[field] = self._token_for(entity_type, value)
 
+        logger.info(
+            "PII_MASKED",
+            extra={"run_token": self.run_token, "tokens": len(self._plain_to_token)},
+        )
         return masked
 
 

@@ -9,7 +9,6 @@ back as rupee decimal strings.
 import re
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 
 RUPEES_STRING_RE = re.compile(r"^\d+(\.\d{1,2})?$")
 

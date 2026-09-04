@@ -29,9 +29,12 @@ idempotent: re-pushing identical rows is absorbed by ON CONFLICT DO NOTHING.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 # Column projection shared by every invoice-fetch below. Kept as one constant
 # so the endpoint and the CLI can never drift apart.
@@ -208,4 +211,13 @@ def build_feeds(
             "closing_balance_paise": running_balance_paise,
         })
 
+    logger.info(
+        "FEEDS_BUILT",
+        extra={
+            "razorpay": len(razorpay),
+            "bank": len(bank),
+            "anomalies": anomalies,
+            "scenario": scenario,
+        },
+    )
     return razorpay, bank

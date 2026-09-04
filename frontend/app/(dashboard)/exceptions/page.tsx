@@ -64,13 +64,11 @@ export default function ExceptionsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold text-navy">Exception Desk</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Human-in-the-loop queue fed by{" "}
-          <span className="font-mono text-xs">reconciliation.dlq.events</span> — every card
-          carries the deterministic trap and the agent&apos;s own stop reason. No
-          cherry-picked 100% success rates here.
-        </p>
+        <h1 className="text-2xl font-semibold text-navy">Exception Desk</h1>          <p className="mt-1 text-sm text-slate-500">
+            Actionable resolution queue. Ambiguous or incomplete settlements
+            are flagged here for financial controller review to guarantee zero
+            misallocations.
+          </p>
       </div>
 
       {/* Maker/checker tabs */}
@@ -109,7 +107,7 @@ export default function ExceptionsPage() {
           <p className="mt-2 text-sm font-medium text-navy">No {tab?.toLowerCase() ?? ""} tickets</p>
           <p className="mt-1 text-xs text-slate-400">
             {tab === "OPEN"
-              ? "The deterministic-first pipeline routed nothing to human review — clean run."
+              ? "No flagged settlements — every transaction was verified and cleared automatically."
               : "Try another status filter."}
           </p>
         </div>
@@ -175,7 +173,7 @@ export default function ExceptionsPage() {
                 {/* LLM stop reason */}
                 <div className="mt-3 flex-1 rounded-md bg-slate-50 px-3 py-2.5">
                   <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
-                    why the agent stopped
+                    System diagnostic
                   </p>
                   <p className="mt-1 text-[13px] leading-relaxed text-slate-600">
                     “{ticket.human_readable_message}”

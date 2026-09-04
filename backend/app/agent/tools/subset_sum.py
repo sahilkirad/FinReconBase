@@ -28,6 +28,7 @@ Invoice net contribution used by the solver: grand_total_paise - tds_deduction_p
 (gateway/MDR netting is applied via the razorpay leg in the Milestone 2 graph).
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 
@@ -39,6 +40,8 @@ from app.agent.tools.fuzzy_linker import (
     token_set_ratio_tokens,
     tokenize,
 )
+
+logger = logging.getLogger(__name__)
 from app.schemas.layer2_tools import SubsetSumInput, SubsetSumResult, SubsetSumStatus
 
 # Cap on enumerated subsets — deterministic bound; beyond it the result is
@@ -308,10 +311,31 @@ def run_subset_sum_matching(inp: SubsetSumInput, db: Session) -> SubsetSumResult
         credits = [c for c in credits if c.amount_paise == inp.target_amount_paise]
 
     if not credits or not invoices:
+        logger.info(
+            "SUBSET_NO_CANDIDATES",
+            extra={
+                "vendor_code": inp.vendor_code,
+                "bank_utr": inp.bank_utr_number,
+                "credits": len(credits),
+                "invoices": len(invoices),
+            },
+        )
         return SubsetSumResult(status=SubsetSumStatus.NO_MATCH, message="No candidate credits or open invoices.")
 
-    return resolve_three_phase(
+    result = resolve_three_phase(
         credits=credits,
         invoices=invoices,
         tolerance_days=inp.date_tolerance_days,
     )
+    logger.info(
+        "SUBSET_VERDICT",
+        extra={
+            "vendor_code": inp.vendor_code,
+            "target_utr": inp.bank_utr_number,
+            "status": result.status,
+            "utr": result.matched_bank_utr,
+            "phase": result.phase_applied,
+            "matched_invoices": result.matched_invoice_ids,
+        },
+    )
+    return result

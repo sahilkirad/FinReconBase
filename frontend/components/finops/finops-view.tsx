@@ -17,6 +17,7 @@ import {
   useTelemetryEvents,
   type InvoiceItem,
 } from "@/lib/queries";
+import { useAuthStore } from "@/store/auth";
 
 function deriveKpis(invoices: InvoiceItem[], batchTotal: number): FinOpsKpis {
   let clearedPaise = 0;
@@ -50,16 +51,18 @@ function deriveKpis(invoices: InvoiceItem[], batchTotal: number): FinOpsKpis {
 }
 
 export function FinOpsView({ batchId }: { batchId: string }) {
+  const profile = useAuthStore((s) => s.profile);
   const telemetry = useBatchTelemetry(batchId);
   const [running, setRunning] = useState(true);
   const events = useTelemetryEvents(batchId, running);
   const [refreshing, setRefreshing] = useState(false);
 
   // URL holds the batch id; sessionStorage lets the top-nav return here after
-  // the user visits Ledger / Exception Desk / Command Center.
+  // the user visits Ledger / Exception Desk / Command Center. Stored per
+  // vendor so a pointer never leaks across tenants.
   useEffect(() => {
-    rememberActiveBatch(batchId);
-  }, [batchId]);
+    if (profile?.vendor_code) rememberActiveBatch(batchId, profile.vendor_code);
+  }, [batchId, profile?.vendor_code]);
 
   useEffect(() => {
     setRunning(isRunActive(telemetry.data?.layer2));
@@ -94,8 +97,8 @@ export function FinOpsView({ batchId }: { batchId: string }) {
   const settledCount = kpis.clearedCount;
   const reviewCount = kpis.reviewCount;
 
-  const extractionStatus = data.status;
-  const settlementStatus = layer2 ? layer2.status : "awaiting extraction";
+  const documentsDone = data.status === "COMPLETED";
+  const settlementDone = layer2?.status === "COMPLETED";
 
   async function refresh() {
     setRefreshing(true);
@@ -117,10 +120,10 @@ export function FinOpsView({ batchId }: { batchId: string }) {
         </div>
         <div className="flex items-center gap-2">
           <StatusPill tone={toneForStatus(data.status)}>
-            Extraction {extractionStatus.toLowerCase()}
+            {documentsDone ? "Documents Processed" : "Processing Documents"}
           </StatusPill>
           <StatusPill tone={toneForStatus(layer2?.status ?? "PENDING")}>
-            Settlement {settlementStatus.toLowerCase()}
+            {settlementDone ? "Settlement Sync Complete" : "Awaiting Settlement Sync"}
           </StatusPill>
           {running && <StatusPill tone="pending">● live</StatusPill>}
           {!running && settledCount === data.total_invoices && (

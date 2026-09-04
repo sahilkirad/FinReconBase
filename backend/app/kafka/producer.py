@@ -107,12 +107,4 @@ def publish_invoice_event(
         )
         raise
 
-
-def close_producer():
-    """Close the Kafka producer connection."""
-    global _producer
-    if _producer is not None:
-        _producer.flush()
-        _producer.close()
-        _producer = None
-        logger.info("Kafka producer closed")
+

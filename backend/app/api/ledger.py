@@ -10,6 +10,7 @@ proof: DEBIT total - CREDIT total = imbalance_paise (always 0 for a healthy
 ledger — the frontend renders it as the audit footer).
 """
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,6 +24,8 @@ from app.schemas.dashboard import (
     LedgerEntriesResponse,
     LedgerEntryLine,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 
@@ -118,4 +121,8 @@ def list_ledger_entries(
             )
         )
 
+    logger.info(
+        "LEDGER_ENTRIES_READ",
+        extra={"vendor_code": vendor_code, "total": len(items), "utr_filter": utr_number},
+    )
     return LedgerEntriesResponse(vendor_code=vendor_code, total=len(items), items=items)

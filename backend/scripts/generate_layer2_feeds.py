@@ -2,7 +2,7 @@
 Layer 2 E2E Test Feed Generator — Stream 2 (Razorpay) + Stream 3 (Bank)
 
 Why this reads Postgres instead of re-running generate_test_batch.py:
-the 50-invoice PDF generator is seedless-random, so re-running it can never
+the invoice PDF generator is seedless-random, so re-running it can never
 reproduce the numbers inside YOUR test_batch_50.pdf. The reconciliation
 engine (subset-sum / anchor / ledger) matches against what Layer 1 actually
 extracted and stored in `extracted_invoices` (integer paise). This script

@@ -37,7 +37,7 @@ import logging
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal

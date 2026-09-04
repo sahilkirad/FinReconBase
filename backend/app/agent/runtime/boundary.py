@@ -109,7 +109,12 @@ def claim_run(batch_id: str, vendor_code: str, run_type: str, total: int, db=Non
             },
         ).first()
         db.commit()
-        return row is not None
+        claimed = row is not None
+        logger.info(
+            "RUN_CLAIMED" if claimed else "RUN_CLAIM_RACE_LOST",
+            extra={"batch_id": batch_id, "vendor_code": vendor_code, "run_type": run_type},
+        )
+        return claimed
     finally:
         if own_db:
             db.close()
@@ -122,6 +127,7 @@ def mark_running(batch_id: str, db=None) -> None:
     try:
         db.execute(text(_START_RUN_SQL), {"batch_id": batch_id})
         db.commit()
+        logger.info("RUN_MARKED_RUNNING", extra={"batch_id": batch_id})
     finally:
         if own_db:
             db.close()

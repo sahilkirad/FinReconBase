@@ -3,6 +3,8 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { clearActiveBatch } from "@/lib/active-batch";
+
 export interface VendorProfile {
   vendor_code: string;
   vendor_name: string;
@@ -28,7 +30,12 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       profile: null,
       signIn: (token, profile) => set({ token, profile }),
-      signOut: () => set({ token: null, profile: null }),
+      signOut: () => {
+        // Never let a remembered batch pointer outlive the session — a stale
+        // id from tenant A must not drive tenant B's nav after re-login.
+        clearActiveBatch();
+        set({ token: null, profile: null });
+      },
     }),
     {
       name: "finrecon-auth",

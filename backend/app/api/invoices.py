@@ -30,7 +30,7 @@ from app.schemas.invoice import (
     UploadResponse,
 )
 from app.tools.checksum import run_checksum
-from app.tools.guardrail import DocumentGuardrail, create_guardrail
+from app.tools.guardrail import create_guardrail
 from app.tools.blur_check import check_blur
 from app.tools.preprocessing import preprocess_path_a_ocr, preprocess_path_b_vlm
 from app.tools.ocr_engine import extract_text
@@ -225,9 +225,14 @@ async def upload_invoice(
             # Still insert but mark as EXCEPTION_FLAGGED
             processing_status = "EXCEPTION_FLAGGED"
             validation_errors = checksum_errors
+            logger.warning(
+                "SINGLE_CHECKSUM_FAILED",
+                extra={"vendor_code": vendor_code, "errors": checksum_errors[:5]},
+            )
         else:
             processing_status = "VALIDATED"
             validation_errors = []
+            logger.info("SINGLE_CHECKSUM_PASS", extra={"vendor_code": vendor_code})
 
         # --- Step 9: Compute paise fields for searchable columns ---
         grand_total_paise = invoice_payload.financial_summary.grand_total_paise

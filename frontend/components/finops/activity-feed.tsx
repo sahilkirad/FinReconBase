@@ -100,7 +100,7 @@ export function ActivityFeed({
       {visible.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-4 py-10 text-center text-sm text-slate-400">
           {running
-            ? "Reconciliation is underway — activity will appear here as invoices are matched."
+            ? "System activity and audit logs will populate here as transactions are verified."
             : "No activity recorded for this batch yet."}
         </div>
       ) : (

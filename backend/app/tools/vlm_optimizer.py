@@ -219,11 +219,6 @@ class TokenBucketRateLimiter:
 _vlm_rate_limiter = TokenBucketRateLimiter(max_tokens=10, refill_rate=10 / 60)
 
 
-def get_vlm_rate_limiter() -> TokenBucketRateLimiter:
-    """Get the global in-memory VLM rate limiter (fallback)."""
-    return _vlm_rate_limiter
-
-
 # =============================================================================
 # Full Jitter Exponential Backoff
 # =============================================================================

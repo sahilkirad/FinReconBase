@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,6 +23,8 @@ from app.schemas.auth import (
     VendorRegisterRequest,
     VendorTokenResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -202,6 +205,9 @@ def register_vendor(
         settings=settings,
     )
 
+    logger.info(
+        "VENDOR_REGISTERED", extra={"vendor_code": vendor_code, "role": "ADMIN"}
+    )
     return VendorTokenResponse(
         access_token=access_token,
         vendor_code=vendor_code,
@@ -268,6 +274,7 @@ def login_vendor(
         settings=settings,
     )
 
+    logger.info("VENDOR_LOGIN_OK", extra={"vendor_code": vendor_code})
     return VendorTokenResponse(
         access_token=access_token,
         vendor_code=vendor_code,

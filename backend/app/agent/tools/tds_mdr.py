@@ -14,9 +14,12 @@ Outcomes:
 - INVALID_PAISE_CASTING         — corrupted decimal input (blocked before crash)
 """
 
+import logging
 from decimal import Decimal
 
 from app.agent.tools.common import InvalidPaiseStringError, paise_to_rupees, rupees_to_paise
+
+logger = logging.getLogger(__name__)
 from app.schemas.layer2_tools import (
     TdsMdrInput,
     TdsMdrResult,
@@ -71,6 +74,9 @@ def calculate_tds_mdr(inp: TdsMdrInput) -> TdsMdrResult:
         gross_paise = rupees_to_paise(inp.grand_total_rupees)
         tds_paise = rupees_to_paise(inp.tds_deducted_rupees)
     except InvalidPaiseStringError as exc:
+        logger.error(
+            "TDS_WATERFALL_INVALID_PAISE", extra={"invoice_id": inp.invoice_id, "error": str(exc)}
+        )
         return TdsMdrResult(
             status=WaterfallStatus.INVALID_PAISE_CASTING,
             invoice_id=inp.invoice_id,
@@ -82,6 +88,10 @@ def calculate_tds_mdr(inp: TdsMdrInput) -> TdsMdrResult:
     net_paise = gross_paise - tds_paise - gateway_paise
 
     if net_paise < 0:
+        logger.error(
+            "TDS_WATERFALL_NEGATIVE_NET",
+            extra={"invoice_id": inp.invoice_id, "gross_paise": gross_paise, "net_paise": net_paise},
+        )
         return TdsMdrResult(
             status=WaterfallStatus.NEGATIVE_NET_SETTLEMENT,
             invoice_id=inp.invoice_id,
@@ -96,6 +106,15 @@ def calculate_tds_mdr(inp: TdsMdrInput) -> TdsMdrResult:
     if _tds_rate_anomaly(tds_paise, gross_paise, inp.tds_category_code):
         flags.append("TDS_RATE_ANOMALY")
 
+    logger.info(
+        "TDS_WATERFALL_CALCULATED",
+        extra={
+            "invoice_id": inp.invoice_id,
+            "gross_paise": gross_paise,
+            "net_paise": net_paise,
+            "flags": flags,
+        },
+    )
     return TdsMdrResult(
         status=WaterfallStatus.WATERFALL_CALCULATED,
         invoice_id=inp.invoice_id,

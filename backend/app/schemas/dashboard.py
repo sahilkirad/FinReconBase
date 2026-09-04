@@ -115,3 +115,16 @@ class LedgerEntriesResponse(BaseModel):
     vendor_code: str
     total: int
     items: list[LedgerBatchView]
+
+
+# =============================================================================
+# Latest batch (top-nav rehydration after a fresh sign-in)
+# =============================================================================
+
+
+class LatestBatchResponse(BaseModel):
+    batch_id: str
+    status: str
+    total_invoices: int
+    created_at: datetime
+    completed_at: datetime | None = None

@@ -137,8 +137,8 @@ export default function ReconciliationPage() {
         autoGen.mutate({ batch_id: data.batch_id, anomalies });
       }
       // batch_id becomes the URL — reload-safe state for the Live page (M6) —
-      // and is remembered so the top nav can always return to this batch.
-      rememberActiveBatch(data.batch_id);
+      // and is remembered (per vendor) so the top nav can always return.
+      rememberActiveBatch(data.batch_id, data.vendor_code);
       router.push(`/reconciliation/${data.batch_id}`);
     } catch (err) {
       setRunError(extractApiError(err));
@@ -160,10 +160,8 @@ export default function ReconciliationPage() {
         <div>
           <h1 className="text-2xl font-semibold text-navy">Command Center</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Materialise the disconnected streams in order, then upload the
-            invoice batch. Feed anchors always land{" "}
-            <span className="font-medium text-navy">before</span> the batch can
-            seal — no reconciliation race.
+            Central ingestion hub. Upload vendor invoices to initiate automated
+            extraction, multi-way matching, and ledger settlement.
           </p>
         </div>
         {profile && (
@@ -184,14 +182,12 @@ export default function ReconciliationPage() {
           />
           <span className="text-sm">
             <span className="font-semibold text-navy">
-              Auto-generate settlement feeds (demo mode)
+              Simulate Live Payment Gateway &amp; Bank Feeds
             </span>
             <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
-              No files needed. After the batch upload (202), the API derives
-              razorpay + bank rows from this batch&apos;s validated invoices the
-              moment Layer 1 finishes — before Layer 2 seals — and starts the
-              reconciliation automatically. Switch off to push your own Streams
-              2 &amp; 3 files below instead.
+              Automatically injects matching Razorpay settlements and Bank
+              records to simulate a real-time production environment. Turn off
+              to manually upload historical feed files.
             </span>
           </span>
         </label>
@@ -217,8 +213,8 @@ export default function ReconciliationPage() {
             </select>
             <span className="text-[11px] text-slate-400">
               {anomalies === 0
-                ? "Clean run — every invoice settles deterministically."
-                : `The last ${anomalies} invoices will never match → OPEN tickets on the Exception Desk.`}
+                ? "Clean run — every invoice is matched and cleared automatically."
+                : `The last ${anomalies} invoices will never match → routed to the Exception Desk for review.`}
             </span>
           </div>
         )}
@@ -269,14 +265,8 @@ export default function ReconciliationPage() {
 
         {autoFeeds ? (
           <p className="mt-2 text-xs leading-relaxed text-slate-500">
-            Streams 2 &amp; 3 (Razorpay settlements + bank CREDITs) are derived
-            from each invoice&apos;s VALIDATED net — grand total minus TDS — and
-            pushed by{" "}
-            <code className="rounded bg-slate-100 px-1 font-mono text-[11px]">
-              POST /demo/auto-generate-feeds
-            </code>{" "}
-            the moment extraction completes. Same idempotent inserts as the
-            webhook endpoints, scoped to your vendor. Nothing to upload here.
+            The system will securely sync with configured payment gateways and
+            banking APIs to establish the settlement baseline.
           </p>
         ) : (
           <>
@@ -365,11 +355,11 @@ export default function ReconciliationPage() {
         <div className="mt-3">
           <Dropzone
             accept=".pdf,application/pdf"
-            label="50-invoice PDF"
+            label="invoice PDF"
             hint={
               autoFeeds
-                ? "Multi-page PDF or image. The API splits pages, fans out one Kafka event per page, then auto-derives the settlement feeds for this batch."
-                : "Multi-page PDF or image. The API splits pages and fans out one Kafka event per page — CSV is rejected by design."
+                ? "Multi-page PDF or image. Each invoice is extracted, validated, and auto-matched against the settlement feeds."
+                : "Multi-page PDF or image. CSV files are not supported."
             }
             file={pdf}
             busy={!feedsReady}
@@ -393,10 +383,10 @@ export default function ReconciliationPage() {
       >
         <h2 className="text-sm font-semibold text-navy">Step 3 · Run reconciliation</h2>
         <p className="mt-1 text-xs text-slate-400">
-          Publishes one event per page and returns 202 immediately — you will
-          be routed to the live telemetry view with the batch id in the URL.
+          Uploads are accepted instantly and processed in the background — you
+          will be routed to a live view of the batch as it runs.
           {autoFeeds &&
-            " Settlement feeds are generated in the background the moment Layer 1 completes, then Layer 2 reconciles automatically."}
+            " Settlement feeds are injected automatically, then matching and posting begin."}
         </p>
         {runError && <p className="mt-2 text-xs text-danger">{runError}</p>}
         {autoGen.isError && (

@@ -11,6 +11,7 @@ telemetry stream written by the recon supervisor worker; when no events exist
 the DB-derived funnel stays accurate.
 """
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,10 +24,13 @@ from app.db.session import get_db
 from app.schemas.dashboard import (
     BatchTelemetryResponse,
     InvoiceTelemetryItem,
+    LatestBatchResponse,
     Layer2RunSummary,
     TelemetryEventsResponse,
     TelemetryFunnel,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/batches", tags=["telemetry"])
 
@@ -64,6 +68,18 @@ _ITEMS_SQL = text(
     LEFT JOIN invoice_reconciliations ir ON ir.document_id = bii.document_id
     WHERE bii.batch_id = :batch_id
     ORDER BY bii.row_number NULLS LAST
+    """
+)
+
+# Most recent batch for the authenticated vendor (top-nav rehydration
+# after a fresh sign-in — sessionStorage alone is per-tab and volatile).
+_LATEST_BATCH_SQL = text(
+    """
+    SELECT batch_id::text, status, total_invoices, created_at, completed_at
+    FROM batch_jobs
+    WHERE vendor_code = :vendor_code
+    ORDER BY created_at DESC
+    LIMIT 1
     """
 )
 
@@ -139,6 +155,30 @@ def _read_telemetry_map(batch_id: str, redis_url: str) -> dict[str, dict]:
             entry["path"] = "agent" if (llm or tools) else "fast_path"
         entry["llm_invoked"] = llm
     return by_invoice
+
+
+@router.get("/latest", response_model=LatestBatchResponse)
+def get_latest_batch(
+    db: Session = Depends(get_db),
+    user_context: dict = Depends(get_current_user_context),
+) -> LatestBatchResponse:
+    """Most recent batch for the authenticated vendor (nav rehydration)."""
+    row = db.execute(
+        _LATEST_BATCH_SQL,
+        {"vendor_code": str(user_context["vendor_code"])},
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No batches found",
+        )
+    return LatestBatchResponse(
+        batch_id=str(row[0]),
+        status=str(row[1]),
+        total_invoices=int(row[2] or 0),
+        created_at=row[3],
+        completed_at=row[4],
+    )
 
 
 @router.get("/{batch_id}/telemetry", response_model=BatchTelemetryResponse)
@@ -219,6 +259,17 @@ def get_batch_telemetry(
     fast_path = sum(1 for i in invoices if i.path == "fast_path")
     agent_routed = sum(1 for i in invoices if i.path in ("agent", "deterministic_fallback"))
 
+    logger.info(
+        "BATCH_TELEMETRY_READ",
+        extra={
+            "batch_id": batch_id,
+            "vendor_code": vendor_code,
+            "total": len(invoices),
+            "settled": settled,
+            "exceptions": exception_count,
+            "layer2_status": layer2.status if layer2 else None,
+        },
+    )
     return BatchTelemetryResponse(
         batch_id=str(batch[0]),
         vendor_code=str(batch[1]),
@@ -267,4 +318,8 @@ def get_batch_telemetry_events(
 
     writer = telemetry_module.BatchTelemetryWriter(settings.redis_url)
     events = writer.read(batch_id)
+    logger.info(
+        "BATCH_TELEMETRY_EVENTS_READ",
+        extra={"batch_id": batch_id, "vendor_code": vendor_code, "total": len(events)},
+    )
     return TelemetryEventsResponse(batch_id=batch_id, total=len(events), events=events)

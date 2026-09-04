@@ -10,7 +10,9 @@ import {
   batchIdFromPath,
   isLiveBatchPath,
   readActiveBatch,
+  rememberActiveBatch,
 } from "@/lib/active-batch";
+import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 
 const NAV = [
@@ -39,6 +41,7 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const { token, profile, signOut } = useAuthStore();
+  const vendorCode = profile?.vendor_code ?? null;
   // SSR/hydration: the guard must not flash the app before sessionStorage loads.
   const [mounted, setMounted] = useState(false);
   const [liveBatch, setLiveBatch] = useState<string | null>(null);
@@ -46,14 +49,40 @@ export default function DashboardLayout({
   useEffect(() => setMounted(true), []);
 
   // Derive the Financial Operations Center batch from the URL when present,
-  // otherwise fall back to the last-watched batch (sessionStorage).
+  // otherwise fall back to the last-watched batch (sessionStorage, scoped to
+  // this vendor so a stale pointer from another tenant is never used).
   useEffect(() => {
     if (isLiveBatchPath(pathname)) {
-      setLiveBatch(batchIdFromPath(pathname));
+      const fromPath = batchIdFromPath(pathname);
+      if (fromPath && vendorCode) rememberActiveBatch(fromPath, vendorCode);
+      setLiveBatch(fromPath);
     } else {
-      setLiveBatch(readActiveBatch());
+      setLiveBatch(vendorCode ? readActiveBatch(vendorCode) : null);
     }
-  }, [pathname]);
+  }, [pathname, vendorCode]);
+
+  // DB-backed rehydration: after a fresh sign-in the sessionStorage pointer is
+  // gone (it is per-tab), so ask the backend for this vendor's most recent
+  // batch. Without this the Financial Operations nav item would stay hidden
+  // until a brand-new batch is run.
+  useEffect(() => {
+    if (!mounted || !token || !vendorCode || liveBatch) return;
+    let cancelled = false;
+    api
+      .get<{ batch_id: string }>("/batches/latest")
+      .then(({ data }) => {
+        if (!cancelled && data?.batch_id) {
+          setLiveBatch(data.batch_id);
+          rememberActiveBatch(data.batch_id, vendorCode);
+        }
+      })
+      .catch(() => {
+        /* 404 = vendor has no batches yet — keep the item hidden */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, token, vendorCode, liveBatch]);
 
   useEffect(() => {
     if (mounted && !token) {
@@ -193,7 +222,7 @@ export default function DashboardLayout({
       </main>
 
       <footer className="border-t border-line py-3 text-center text-[11px] text-slate-400">
-        Immutable double-entry ledger · WORM enforcement at the database layer
+        Every cleared transaction is locked into the enterprise General Ledger
       </footer>
     </div>
   );

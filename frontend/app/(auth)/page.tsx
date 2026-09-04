@@ -76,28 +76,32 @@ export default function OnboardingPage() {
   const isLogin = mode === "login";
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-navy px-4 py-10">
-      <div className="grid w-full max-w-5xl items-center gap-10 lg:grid-cols-2">
-        {/* Left: value proposition + fan-out animation */}
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-navy px-4 py-10">
+      {/* Background animation layer — never stacks above the auth card */}
+      <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden>
+        <FanOutVisual />
+      </div>
+
+      <div className="relative z-10 grid w-full max-w-5xl items-center gap-10 lg:grid-cols-2">
+        {/* Left: value proposition */}
         <section className="hidden flex-col items-center text-center lg:flex">
           <p className="mb-2 text-xs font-semibold uppercase tracking-[0.25em] text-primary">
-            Deterministic First · AI Second
+            Enterprise Finance Operations
           </p>
-          <FanOutVisual />
           <h1 className="mt-6 max-w-md text-3xl font-semibold leading-tight text-white">
             One invoice batch in.
             <br />
             A perfectly balanced ledger out.
           </h1>
           <p className="mt-3 max-w-md text-sm leading-relaxed text-slate-300">
-            FinRecon fans 50 invoices across isolated reconciliation workers,
-            settles the deterministic fast-path without an LLM, and routes only
-            the genuine exceptions to a human desk.
+            Autonomous financial reconciliation. Ingest unstructured invoices,
+            automatically synchronize settlement feeds, and post perfectly
+            balanced entries to an immutable ledger.
           </p>
         </section>
 
         {/* Right: native vendor auth card */}
-        <section className="rounded-xl border border-white/10 bg-white p-8 shadow-card">
+        <section className="relative z-10 rounded-xl border border-white/10 bg-white p-8 shadow-xl">
           <div className="mb-6">
             <p className="font-mono text-xs font-semibold uppercase tracking-widest text-primary">
               FinRecon
@@ -203,7 +207,7 @@ export default function OnboardingPage() {
           </form>
 
           <p className="mt-4 text-center font-mono text-[11px] text-slate-400">
-            JWT · HS256 · 120-minute session · zero Google OAuth
+            Secure B2B Tenant Access · End-to-End Encryption
           </p>
         </section>
       </div>
