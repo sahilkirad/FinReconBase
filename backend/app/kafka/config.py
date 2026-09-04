@@ -91,6 +91,13 @@ class KafkaConfig:
             "auto_offset_reset": "earliest",
             "enable_auto_commit": False,  # Manual commit after processing
             "max_poll_records": 10,
+            # A page event can block the poll loop for minutes (boundary OCR
+            # + VLM + retries). Defaults (max_poll_interval_ms=300000,
+            # session_timeout_ms=10000) mark a busy worker dead -> rebalance
+            # -> redelivery storms -> file_not_found DLQ poisons + drift.
+            "max_poll_interval_ms": 900000,  # 15 min per poll cycle
+            "session_timeout_ms": 30000,     # keep alive while processing
+            "heartbeat_interval_ms": 10000,
         }
         
         if self.security_protocol == "SSL":

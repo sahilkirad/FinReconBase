@@ -160,6 +160,13 @@ def _wait_until_terminal(batch_id: str, vendor_code: str) -> str | None:
         current = str(row[2])
         if current in TERMINAL_STATUSES:
             return current
+        # Extraction is genuinely done even if the COMPLETED flip hasn't
+        # committed yet — push now, ahead of the Layer 2 seal (L2's bounded
+        # buffer grace absorbs the race).
+        total = int(row[3] or 0)
+        done = int(row[4] or 0) + int(row[5] or 0)
+        if total > 0 and done >= total:
+            return "COMPLETED"
         time.sleep(settings.auto_feed_poll_s)
     return None
 

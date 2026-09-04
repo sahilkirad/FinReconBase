@@ -95,7 +95,7 @@ class Settings(BaseSettings):
 
     # Demo auto-feed generator (POST /demo/auto-generate-feeds): bounds for the
     # server-side wait that lands Streams 2 & 3 before the Layer 2 seal.
-    auto_feed_wait_s: int = Field(default=900, ge=30, le=3600)
+    auto_feed_wait_s: int = Field(default=3600, ge=30, le=21600)
     auto_feed_poll_s: float = Field(default=3.0, ge=1.0, le=60.0)
 
     # Layer 5: Ledger Writer (immutable double-entry sink)

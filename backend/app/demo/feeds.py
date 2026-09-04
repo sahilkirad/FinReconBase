@@ -82,7 +82,8 @@ LATEST_COMPLETED_BATCH_SQL = """
 
 # Live batch state, scoped to the owning vendor (demo endpoint gate).
 BATCH_STATE_SQL = """
-    SELECT b.batch_id::text, b.vendor_code, b.status, b.total_invoices
+    SELECT b.batch_id::text, b.vendor_code, b.status, b.total_invoices,
+           b.processed_count, b.failed_count
     FROM batch_jobs b
     WHERE b.batch_id = :bid AND b.vendor_code = :vc
 """

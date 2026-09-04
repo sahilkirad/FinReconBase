@@ -480,8 +480,29 @@ class InvoiceConsumer:
                 """),
                 {"batch_id": batch_id},
             ).scalar_one_or_none()
+
+            # Redelivery guard: a page already recorded (any status) must not
+            # re-run extraction, double-insert, or double-count. This also
+            # turns redelivered events whose page file was already cleaned
+            # into silent skips instead of file_not_found DLQ poisons.
+            already = db.execute(
+                text("""
+                    SELECT 1 FROM batch_invoice_items
+                    WHERE batch_id = :bid AND row_number = :rn
+                    LIMIT 1
+                """),
+                {"bid": batch_id, "rn": page_index},
+            ).first()
         finally:
             db.close()
+
+        if already is not None:
+            logger.info(
+                "Redelivered page event already processed; skipping",
+                extra={"batch_id": batch_id, "page_index": page_index},
+            )
+            _cleanup_page_file(file_path)
+            return
 
         if database_vendor_code is None:
             raise TerminalProcessingError(
@@ -784,10 +805,23 @@ class InvoiceConsumer:
         if not batch_id:
             return
 
+        from sqlalchemy import text
         from app.db.session import SessionLocal
 
         db = SessionLocal()
         try:
+            # Only the first delivery of a poison event may advance the
+            # failed counter (kills the 52+35 > 50 drift on redelivery).
+            already = db.execute(
+                text("""
+                    SELECT 1 FROM batch_invoice_items
+                    WHERE batch_id = :bid AND row_number = :rn
+                    LIMIT 1
+                """),
+                {"bid": batch_id, "rn": data.get("page_index")},
+            ).first()
+            if already is not None:
+                return
             is_complete = _update_batch_progress(db, batch_id, success=False)
             if is_complete:
                 _complete_batch(db, batch_id)
