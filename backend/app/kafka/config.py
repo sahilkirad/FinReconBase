@@ -18,6 +18,7 @@ INVOICE_PROCESSING_TOPIC = "invoice.processing.events"
 INVOICE_EXTRACTED_TOPIC = "invoice.extracted.events"
 RECONCILIATION_COMPLETED_TOPIC = "reconciliation.completed.events"
 RECONCILIATION_DLQ_TOPIC = "reconciliation.dlq.events"
+LEDGER_FATAL_DLQ_TOPIC = "ledger.fatal.dlq.events"
 
 
 @dataclass
@@ -41,6 +42,7 @@ class KafkaConfig:
     invoice_extracted_topic: str = INVOICE_EXTRACTED_TOPIC
     reconciliation_completed_topic: str = RECONCILIATION_COMPLETED_TOPIC
     reconciliation_dlq_topic: str = RECONCILIATION_DLQ_TOPIC
+    ledger_fatal_dlq_topic: str = LEDGER_FATAL_DLQ_TOPIC
     
     @classmethod
     def from_settings(cls) -> "KafkaConfig":
@@ -53,6 +55,7 @@ class KafkaConfig:
             ssl_certfile=settings.kafka_ssl_certificate_location,
             ssl_keyfile=settings.kafka_ssl_key_location,
             invoice_consumer_group=settings.layer1_consumer_group,
+            ledger_fatal_dlq_topic=settings.ledger_fatal_dlq_topic,
         )
     
     def get_producer_config(self) -> dict:

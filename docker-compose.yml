@@ -78,6 +78,7 @@ services:
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic invoice.extracted.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.completed.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic reconciliation.dlq.events --partitions 3 --replication-factor 1 &&
+      kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --create --if-not-exists --topic ledger.fatal.dlq.events --partitions 3 --replication-factor 1 &&
       kafka-topics --bootstrap-server kafka:9093 --command-config /etc/kafka/client.properties --list
       "
 
@@ -165,6 +166,23 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    deploy:
+      replicas: 1
+
+  ledger-writer:
+    build:
+      context: ./backend
+    container_name: finrecon-ledger-writer
+    command: ["python", "-m", "app.workers.ledger_writer"]
+    env_file:
+      - .env
+    volumes:
+      - ./infra/certs:/app/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     deploy:
       replicas: 1
 
