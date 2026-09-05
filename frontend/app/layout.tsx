@@ -4,7 +4,7 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "FinRecon — AI Finance Controller",
+  title: "Vellum",
   description:
     "Deterministic-first AI reconciliation: extract, match, and post double-entry ledgers for 50+ invoices.",
 };

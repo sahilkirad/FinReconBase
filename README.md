@@ -1,12 +1,12 @@
-# FinRecon 
+# Vellum
 
 **One invoice batch in. A perfectly balanced ledger out.**
 
-FinRecon is a production-grade, event-driven invoice-reconciliation platform built for the **Razorpay Buildathon (Track 4)**. It ingests unstructured vendor invoices (PDF / images), automatically synchronizes **Razorpay settlement** and **bank statement** feeds, reconciles them against the invoices with a **deterministic-first, AI-second** matching engine, and posts mathematically balanced double-entry records to an **immutable ledger** — surfacing only genuine exceptions to a human review desk.
+Vellum is a production-grade, event-driven invoice-reconciliation platform built for the **Razorpay Buildathon (Track 4)**. It ingests unstructured vendor invoices (PDF / images), automatically synchronizes **Razorpay settlement** and **bank statement** feeds, reconciles them against the invoices with a **deterministic-first, AI-second** matching engine, and posts mathematically balanced double-entry records to an **immutable ledger** — surfacing only genuine exceptions to a human review desk.
 
 ```
         ┌──────────────────────────────────────────────────────────────────┐
-        │                    FINRECON — LAYERED PIPELINE                   │
+        │                    VELLUM — LAYERED PIPELINE                     │
         └──────────────────────────────────────────────────────────────────┘
 
  Stream 1           Stream 2 (Razorpay)         Stream 3 (Bank)
@@ -64,7 +64,8 @@ FinRecon is a production-grade, event-driven invoice-reconciliation platform bui
 - [Quick start (Docker)](#quick-start-docker)
   - [1. Environment](#1-environment)
   - [2. Kafka mTLS certificates](#2-kafka-mtls-certificates)
-  - [3. Build & start](#3-build--start)
+  - [3. ONNX document classifier (mandatory guardrail model)](#3-onnx-document-classifier-mandatory-guardrail-model)
+  - [4. Build & start](#4-build--start)
 - [Configuration reference](#configuration-reference)
 - [Services](#services)
 - [Kafka topics & consumer groups](#kafka-topics--consumer-groups)
@@ -73,7 +74,6 @@ FinRecon is a production-grade, event-driven invoice-reconciliation platform bui
 - [Demo walkthrough](#demo-walkthrough)
 - [Generating synthetic test data](#generating-synthetic-test-data)
 - [Scaling workers](#scaling-workers)
-- [Testing](#testing)
 - [Security & fintech guardrails](#security--fintech-guardrails)
 - [Troubleshooting](#troubleshooting)
 
@@ -231,7 +231,24 @@ echo "DONE: All certificates generated"
 
 You should see `DONE: All certificates generated` and a populated `infra/certs/`.
 
-### 3. Build & start
+### 3. ONNX document classifier (mandatory guardrail model)
+
+The pre-flight guardrail **hard-fails uploads** if the DocRex ONNX model is missing.
+Download all three files into `backend/models/` **before** `docker compose up`
+(they are mounted read-only into the API at `/app/models`):
+
+```powershell
+# from the repo root
+New-Item -ItemType Directory -Force backend/models | Out-Null
+curl.exe -L -o backend/models/invoice_classifier_fp32.onnx       https://huggingface.co/vivekkaushal/DocRex/resolve/main/invoice_classifier_fp32.onnx
+curl.exe -L -o backend/models/invoice_classifier_fp32.onnx.data  https://huggingface.co/vivekkaushal/DocRex/resolve/main/invoice_classifier_fp32.onnx.data
+curl.exe -L -o backend/models/labels.json                        https://huggingface.co/vivekkaushal/DocRex/resolve/main/labels.json
+```
+
+Verify all three exist (`ls backend/models`) — the `.onnx.data` sibling is required,
+the model cannot load without it.
+
+### 4. Build & start
 
 ```powershell
 docker compose up -d --build
@@ -454,32 +471,6 @@ Safe because every worker joins the same consumer group (`layer1_extractor_group
 
 ---
 
-## Testing
-
-Backend unit tests need **no live Postgres/Kafka** (DB access is faked with substring-dispatching sessions). Two modules require Docker-only system deps (`python-magic`, `httpx2`), so run the suite inside the container for 100% coverage:
-
-```powershell
-docker compose exec backend-api python -m pytest -q
-```
-
-Locally, point at the modules that only need pure Python:
-
-```powershell
-cd backend
-python -m pytest tests/test_checksum.py tests/test_subset_sum.py tests/test_tds_mdr.py `
-  tests/test_fuzzy_linker.py tests/test_vlm_optimizer.py tests/test_layer2_supervisor_graph.py -q
-```
-
-Frontend typecheck / build:
-
-```powershell
-cd frontend
-npm run typecheck
-npm run build
-```
-
----
-
 ## Security & fintech guardrails
 
 - **Kafka mTLS** — broker requires client certificates; all service traffic is encrypted (no PLAINTEXT listener except the controller).
@@ -503,6 +494,7 @@ npm run build
 | Upload returns `422` | Body must be `multipart/form-data` with field `file`; `.csv` is rejected by design (415/422) — PDFs/images only |
 | `422` on run-reconciliation from the UI | Token missing/expired — sign in again (the frontend redirects on 401); register creates the JWT immediately |
 | “No data in `extracted_invoices` / `batch_invoice_items`” | Check worker logs first: `docker compose logs invoice_worker`; confirm `infra/certs` + real `GEMINI_API_KEY` are present |
+| Guardrail fails / uploads rejected with “Document classifier model not available” | Run the [Quick start §3](#3-onnx-document-classifier-mandatory-guardrail-model) download command — all 3 files must be in `backend/models/` |
 | Ledger shows nothing after a clean Layer 2 | Confirm `recon-supervisor` reached the completed topic and `ledger-writer` consumed it (`docker compose logs ledger-writer`) |
 | `kafka.net.selector` warnings in worker logs | Library-internal diagnostics, benign when sporadic (TLS handshake > 100 ms). Dampen with `logging.getLogger("kafka.net.selector").setLevel(logging.ERROR)` if noisy |
 | Frontend proxy errors | Browser only calls `/api/v1/*`; in local dev set `API_PROXY_TARGET=http://localhost:8000` in `frontend/.env.local` |
@@ -511,4 +503,4 @@ npm run build
 
 ---
 
-*FinRecon — Razorpay Buildathon Track 4. Backend is FastAPI/LangGraph/Kafka, frontend is Next.js. Not investment advice — balanced to the paise, always.*
+*Vellum — Razorpay Buildathon Track 4. Backend is FastAPI/LangGraph/Kafka, frontend is Next.js. Not investment advice — balanced to the paise, always.*

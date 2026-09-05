@@ -104,7 +104,7 @@ export default function OnboardingPage() {
         <section className="relative z-10 rounded-xl border border-white/10 bg-white p-8 shadow-xl">
           <div className="mb-6">
             <p className="font-mono text-xs font-semibold uppercase tracking-widest text-primary">
-              FinRecon
+              Vellum
             </p>
             <h2 className="mt-1 text-xl font-semibold text-navy">
               {isLogin ? "Vendor sign in" : "Provision a vendor tenant"}

@@ -106,7 +106,7 @@ export default function DashboardLayout({
           <div className="flex items-center gap-8">
             <Link href="/reconciliation" className="flex items-baseline gap-2">
               <span className="font-mono text-sm font-semibold tracking-widest text-primary">
-                FinRecon
+                Vellum
               </span>
               <span className="hidden text-[11px] uppercase tracking-wider text-slate-400 sm:inline">
                 AI Finance Controller
