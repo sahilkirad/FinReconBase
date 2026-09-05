@@ -1,4 +1,4 @@
-# FinRecon — AI Finance Controller
+# FinRecon 
 
 **One invoice batch in. A perfectly balanced ledger out.**
 
